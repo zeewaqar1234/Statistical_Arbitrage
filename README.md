@@ -1,6 +1,6 @@
-# Crypto HFT Tool
+# Cross-Exchange Statistical Arbitrage System
 
-A sophisticated High-Frequency Trading (HFT) tool designed for cryptocurrency markets, focusing on cross-exchange statistical arbitrage between major exchanges like Binance and Kraken. The system identifies and exploits price discrepancies across exchanges in real-time.
+A cross-exchange statistical arbitrage platform for cryptocurrency markets, focusing on price inefficiencies between major exchanges like Binance and Kraken. The system identifies mean-reversion opportunities using z-score based signals and monitors them in real time.
 
 ## Overview
 

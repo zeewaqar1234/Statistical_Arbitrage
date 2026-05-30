@@ -1,42 +1,39 @@
-import React, { useState, useEffect } from 'react'; // Removed useCallback as fetchData will be handled by react-query
-import Plot from 'react-plotly.js';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import './App.css';
 import axios from 'axios';
 import { QueryClient, QueryClientProvider, useQuery } from 'react-query';
 import config from './config';
+import theme from './theme';
+import { ThemeProvider, CssBaseline } from '@mui/material';
+import {
+  LineChart,
+  Line,
+  Area,
+  ComposedChart,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 
-// Use config for API base URL
 const API_BASE_URL = config.apiUrl;
-const SYMBOLS = [
-  "BTC/USDT", "ETH/USDT"
-];
-const REFRESH_INTERVAL = 2000; // Milliseconds
+const SYMBOLS = ['BTC/USDT', 'ETH/USDT'];
+const REFRESH_INTERVAL = 2000;
 const MAX_HISTORY_POINTS = 300;
+const MAX_ACTIVITY_ROWS = 20;
+const CHART_ANIMATION = { isAnimationActive: true, animationDuration: 400 };
 
-// API service object using axios
 const api = {
   getMarketData: async (symbol) => {
     try {
-      console.log(`Fetching market data from: ${API_BASE_URL}/api/v1/market_data/${encodeURIComponent(symbol)}`);
-      const { data } = await axios.get(`${API_BASE_URL}/api/v1/market_data/${encodeURIComponent(symbol)}`, {
-        timeout: 10000,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        withCredentials: false
-      });
+      const { data } = await axios.get(
+        `${API_BASE_URL}/api/v1/market_data/${encodeURIComponent(symbol)}`,
+        { timeout: 10000, headers: { Accept: 'application/json' } }
+      );
       return data;
-    } catch (error) {
-      console.error(`Error fetching market data for ${symbol}:`, error);
-      if (error.response) {
-        console.error('Response data:', error.response.data);
-        console.error('Response status:', error.response.status);
-      } else if (error.request) {
-        console.error('No response received:', error.request);
-      } else {
-        console.error('Error setting up request:', error.message);
-      }
+    } catch {
       return null;
     }
   },
@@ -44,538 +41,526 @@ const api = {
     try {
       const { data } = await axios.get(`${API_BASE_URL}/api/v1/simulation/status`, {
         timeout: 10000,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        withCredentials: false
+        headers: { Accept: 'application/json' },
       });
       return data;
-    } catch (error) {
-      console.error('Error fetching simulation status:', error);
+    } catch {
       return null;
     }
   },
-  getRecentTrades: async (limit = 10) => {
+  getRecentTrades: async (limit = 20) => {
     try {
-      const { data } = await axios.get(`${API_BASE_URL}/api/v1/simulation/trades?limit=${limit}`, {
-        timeout: 10000,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        withCredentials: false
-      });
+      const { data } = await axios.get(
+        `${API_BASE_URL}/api/v1/simulation/trades?limit=${limit}`,
+        { timeout: 10000, headers: { Accept: 'application/json' } }
+      );
       return data.trades || [];
-    } catch (error) {
-      console.error('Error fetching recent trades:', error);
+    } catch {
       return [];
     }
   },
-  getLeaderboard: async () => {
-    try {
-      const { data } = await axios.get(`${API_BASE_URL}/api/v1/simulation/leaderboard`, {
-        timeout: 10000,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        withCredentials: false
-      });
-      return data.leaderboard || [];
-    } catch (error) {
-      console.error('Error fetching leaderboard:', error);
-      return [];
-    }
-  },
-  getAllMarketData: async () => {
-    try {
-      const { data } = await axios.get(`${API_BASE_URL}/api/v1/market_data/all`, {
-        timeout: 10000,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        withCredentials: false
-      });
-      return data.data || {};
-    } catch (error) {
-      console.error('Error fetching all market data:', error);
-      return {};
-    }
-  }
 };
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 3,
-      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
-      staleTime: 0,
-      cacheTime: 5 * 60 * 1000, // 5 minutes
-      refetchOnWindowFocus: true,
-      refetchOnReconnect: true,
-      refetchOnMount: true,
-    },
-  },
-});
+const queryClient = new QueryClient();
 
-function AppContent() { // Renamed original App to AppContent
-  const [selectedSymbol, setSelectedSymbol] = useState(SYMBOLS[0]);
-  const [history, setHistory] = useState({
-    timestamp: [],
-    mid_price: [],
-    raw_zscore: [],
-    adaptive_threshold: [],
-    signal_strength: [],
-    momentum_score: [],
-  });
+function formatTime(date) {
+  return date.toLocaleTimeString('en-US', { hour12: false });
+}
 
-  const { data: marketData, error: marketDataError, isLoading: marketDataLoading } = useQuery(
-    ['marketData', selectedSymbol], // Query key includes selectedSymbol
-    () => api.getMarketData(selectedSymbol),
-    {
-      refetchInterval: REFRESH_INTERVAL,
-      onError: (err) => console.error("Market Data fetch error:", err),
-    }
-  );
+function formatChartTime(ts) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
 
-  const { data: simulationStatus, error: simStatusError, isLoading: simStatusLoading } = useQuery(
-    'simulationStatus',
-    api.getSimulationStatus,
-    {
-      refetchInterval: REFRESH_INTERVAL,
-      onError: (err) => console.error("Simulation Status fetch error:", err),
-    }
-  );
+function getSignalClass(strength, threshold) {
+  const s = strength ?? 0;
+  const t = threshold ?? 1;
+  if (s >= t) return 'negative';
+  if (s >= t * 0.75) return 'warning';
+  return 'positive';
+}
 
-  const { data: recentTrades, error: tradesError, isLoading: tradesLoading } = useQuery(
-    'recentTrades',
-    () => api.getRecentTrades(10),
-    {
-      refetchInterval: REFRESH_INTERVAL,
-      onError: (err) => console.error("Recent Trades fetch error:", err),
-    }
-  );
+function formatMetric(value, decimals = 4) {
+  if (value == null || Number.isNaN(value)) return '—';
+  return value.toFixed(decimals);
+}
 
-  const { data: leaderboard, error: leaderboardError, isLoading: leaderboardLoading } = useQuery(
-    'leaderboard',
-    api.getLeaderboard,
-    {
-      refetchInterval: REFRESH_INTERVAL,
-      onError: (err) => console.error("Leaderboard fetch error:", err),
-    }
-  );
+function formatPercent(value) {
+  if (value == null || Number.isNaN(value)) return '—';
+  return `${(value * 100).toFixed(2)}%`;
+}
 
-  // eslint-disable-next-line no-unused-vars
-  const { data: allMarketData, error: allMarketDataError, isLoading: allMarketDataLoading } = useQuery(
-    'allMarketData',
-    api.getAllMarketData,
-    {
-      refetchInterval: REFRESH_INTERVAL,
-      onError: (err) => console.error("All Market Data fetch error:", err),
-    }
-  );
+function formatUsd(value, decimals = 4) {
+  if (value == null || Number.isNaN(value)) return '—';
+  return value.toFixed(decimals);
+}
 
-  // useEffect to update history when marketData for selectedSymbol changes
-  useEffect(() => {
-    if (marketData) {
-      console.log("Received market data:", marketData); // Debug log
-      setHistory(prevHistory => {
-        const newTimestamp = [...prevHistory.timestamp, new Date(marketData.timestamp)];
-        const newMidPrice = [...prevHistory.mid_price, marketData.mid_price || 0];
-        const newRawZScore = [...prevHistory.raw_zscore, marketData.raw_zscore || 0];
-        const newAdaptiveThreshold = [...prevHistory.adaptive_threshold, marketData.adaptive_threshold || 0];
-        const newSignalStrength = [...prevHistory.signal_strength, marketData.signal_strength || 0];
-        const newMomentumScore = [...prevHistory.momentum_score, marketData.momentum_score || 0];
+function getRelativePriceClass(exchangeDelta, otherDelta) {
+  if (exchangeDelta > otherDelta) return 'positive';
+  if (exchangeDelta < otherDelta) return 'negative';
+  return 'neutral';
+}
 
-        // Keep only the last MAX_HISTORY_POINTS
-        const trim = (arr) => arr.slice(-MAX_HISTORY_POINTS);
+function tradeSide(trade) {
+  return trade.buy_exchange === 'binance' ? 'BUY' : 'SELL';
+}
 
-        return {
-          timestamp: trim(newTimestamp),
-          mid_price: trim(newMidPrice),
-          raw_zscore: trim(newRawZScore),
-          adaptive_threshold: trim(newAdaptiveThreshold),
-          signal_strength: trim(newSignalStrength),
-          momentum_score: trim(newMomentumScore),
-        };
-      });
-    }
-  }, [marketData]);
+function exportActivityCsv(rows) {
+  const header = 'Timestamp,Side,Route,Gross,Fees,Net PnL\n';
+  const body = rows
+    .map((r) => `${r.timestamp},${r.side},${r.route},${r.gross},${r.fees},${r.net}`)
+    .join('\n');
+  const blob = new Blob([header + body], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `activity_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
-  // Reset history when selectedSymbol changes
-  useEffect(() => {
-    console.log("Symbol changed to:", selectedSymbol); // Debug log
-    setHistory({
-      timestamp: [],
-      mid_price: [],
-      raw_zscore: [],
-      adaptive_threshold: [],
-      signal_strength: [],
-      momentum_score: [],
-    });
-  }, [selectedSymbol]);
+const tooltipStyle = {
+  background: '#FFFFFF',
+  border: '1px solid #DEE2E6',
+  borderRadius: '6px',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+  fontSize: 12,
+};
 
-  const isLoading = marketDataLoading || simStatusLoading || tradesLoading || leaderboardLoading || allMarketDataLoading;
-  const combinedError = marketDataError || simStatusError || tradesError || leaderboardError || allMarketDataError;
-
-  // Log errors for debugging
-  useEffect(() => {
-    if (combinedError) {
-      console.error("Combined error state:", {
-        marketDataError,
-        simStatusError,
-        tradesError,
-        leaderboardError,
-        allMarketDataError
-      });
-    }
-  }, [combinedError, marketDataError, simStatusError, tradesError, leaderboardError, allMarketDataError]);
-
-  // Log data updates for debugging
-  useEffect(() => {
-    if (marketData) {
-      console.log("Market data update:", {
-        symbol: marketData.symbol,
-        timestamp: marketData.timestamp,
-        signal: marketData.signal,
-        signal_strength: marketData.signal_strength,
-        raw_zscore: marketData.raw_zscore,
-        mid_price: marketData.mid_price
-      });
-    }
-  }, [marketData]);
-
-  // Define Plotly layout (can be customized further)
-  const commonLayout = {
-    autosize: true,
-    margin: { l: 60, r: 40, t: 60, b: 50 },
-    paper_bgcolor: '#1a1a1a',
-    plot_bgcolor: '#1a1a1a',
-    font: { color: '#ffffff' },
-    xaxis: { 
-      gridcolor: '#333333',
-      color: '#ffffff',
-      title: 'Time',
-      titlefont: { color: '#ffffff' }
-    },
-    yaxis: { 
-      gridcolor: '#333333',
-      color: '#ffffff',
-      title: 'Value',
-      titlefont: { color: '#ffffff' }
-    },
-    legend: { 
-      orientation: "h",
-      yanchor: "bottom",
-      y: 1.02,
-      xanchor: "right",
-      x: 1,
-      font: { color: '#ffffff' },
-      bgcolor: '#1a1a1a',
-      bordercolor: '#333333'
-    },
-    modebar: {
-      bgcolor: '#1a1a1a',
-      color: '#ffffff',
-      activecolor: '#0197ae'
-    }
-  };
-
-  const leaderboardTable = (
-    <div className="leaderboard-section">
-      <h2>Leaderboard</h2>
-      {leaderboard && leaderboard.length > 0 && !leaderboard.every(entry => entry.trade_count === 0) ? (
-        <table className="leaderboard-table">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Total PnL</th>
-              <th>Trade Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaderboard.map((entry) => (
-              <tr key={entry.symbol} className={entry.symbol === selectedSymbol ? 'selected-symbol-row' : ''}>
-                <td>{entry.symbol}</td>
-                <td className={entry.total_pnl > 0 ? 'pnl-positive' : entry.total_pnl < 0 ? 'pnl-negative' : ''}>
-                  {entry.total_pnl?.toFixed(6) || '0.000000'}
-                </td>
-                <td>{entry.trade_count || 0}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <div>No trading activity yet...</div>
-      )}
-    </div>
-  );
-
-  // Add error display with more details
-  const errorDisplay = combinedError && (
-    <div className="error-display" style={{ color: 'red', padding: '10px', margin: '10px', border: '1px solid red' }}>
-      <h3>Error Loading Data</h3>
-      <pre>{JSON.stringify({
-        marketDataError: marketDataError?.message || 'No error',
-        simStatusError: simStatusError?.message || 'No error',
-        tradesError: tradesError?.message || 'No error',
-        leaderboardError: leaderboardError?.message || 'No error',
-        allMarketDataError: allMarketDataError?.message || 'No error'
-      }, null, 2)}</pre>
-    </div>
-  );
-
-  // Add loading display with more context
-  const loadingDisplay = isLoading && (
-    <div className="loading-display" style={{ padding: '10px', margin: '10px', border: '1px solid #ccc' }}>
-      <p>Loading data...</p>
-      <ul>
-        {marketDataLoading && <li>Market Data</li>}
-        {simStatusLoading && <li>Simulation Status</li>}
-        {tradesLoading && <li>Recent Trades</li>}
-        {leaderboardLoading && <li>Leaderboard</li>}
-        {allMarketDataLoading && <li>All Market Data</li>}
-      </ul>
-    </div>
-  );
-
-  // Add data validation display
-  // eslint-disable-next-line no-unused-vars
-  const dataValidationDisplay = marketData && (
-    <div className="data-validation" style={{ padding: '10px', margin: '10px', border: '1px solid #ccc' }}>
-      <h4>Data Validation</h4>
-      <ul>
-        <li>Symbol: {marketData.symbol}</li>
-        <li>Timestamp: {marketData.timestamp}</li>
-        <li>Mid Price: {marketData.mid_price?.toFixed(2) || 'N/A'}</li>
-        <li>Signal: {marketData.signal}</li>
-        <li>Signal Strength: {marketData.signal_strength?.toFixed(2) || 'N/A'}</li>
-        <li>Z-Score: {marketData.raw_zscore?.toFixed(2) || 'N/A'}</li>
-      </ul>
-    </div>
-  );
-
+function PnlTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
   return (
-    <div className="App">
-      {errorDisplay}
-      {loadingDisplay}
-      <div className="dashboard-container">
-        {/* Header and Symbol Selector */}
-        <header className="App-header">
-          <div className="App-logo-container">
-            <img src={process.env.PUBLIC_URL + '/flowistic-logo.png'} className="App-logo" alt="Flowistic Logo" />
-            <h1>Crypto HFT Dashboard</h1>
-          </div>
-          <div style={{ margin: '10px 0' }}>
-            <label htmlFor="symbol-select" style={{ color: '#0197ae', fontWeight: 600, marginRight: 8 }}>Symbol:</label>
-            <select
-              id="symbol-select"
-              value={selectedSymbol}
-              onChange={e => setSelectedSymbol(e.target.value)}
-              style={{ fontSize: '1rem', padding: '4px 10px', borderRadius: 4, border: '1px solid #0197ae', color: '#0197ae', background: '#f8f2eb', fontWeight: 600 }}
-            >
-              {SYMBOLS.map(sym => (
-                <option key={sym} value={sym}>{sym}</option>
-              ))}
-            </select>
-          </div>
-          <p style={{fontSize: '1rem', fontWeight: 'normal', margin: '5px 0 0 0'}}>
-            Displaying: {selectedSymbol}
-          </p>
-        </header>
-        {/* Main Content Area - Single Column Layout */}
-        <main className="main-content-stacked">
-          {/* Leaderboard Section */}
-          <section className="dashboard-section leaderboard-section">
-            {leaderboardTable} 
-          </section>
-          {/* Live Data Feed / Metrics Section */}
-          <section className="dashboard-section status-metrics-section">
-            <h2>Live Data Feed</h2> {/* Title for the section */}
-            {isLoading && <p>Loading data...</p>}
-            {combinedError && <p className="error-message">Error fetching data: {combinedError.message}</p>}
-            {!isLoading && !combinedError && marketData && !marketData.error && <p className="status-ok">Feed Running</p>}
-            {marketData?.error && <p className="error-message">Provider Error for {selectedSymbol}: {marketData.error}</p>}
-            {/* Restructure metrics into a table format */}
-            {simulationStatus ? (
-              <table className="metrics-table">
-                <tbody>
-                  <tr><td>Total PnL:</td><td>{simulationStatus.total_pnl?.toFixed(6)}</td></tr>
-                  <tr><td>Total Trades:</td><td>{simulationStatus.total_trades}</td></tr>
-                  <tr><td>Win Rate:</td><td>{simulationStatus.win_rate?.toFixed(2)}%</td></tr>
-                  <tr><td>Avg PnL/Trade:</td><td>{simulationStatus.avg_pnl_per_trade?.toFixed(6)}</td></tr>
-                  <tr><td>Total Fees:</td><td>{simulationStatus.total_fees_paid?.toFixed(6)}</td></tr>
-                </tbody>
-              </table>
-            ) : <p>Loading PnL status...</p> }
-          </section>
-          {/* Data Validation Card - In Table Format */}
-          {marketData && (
-            <section className="dashboard-section data-validation-table-section">
-              <h2>Data Validation</h2> {/* Title for the section */}
-              <table className="data-validation-table">
-                <tbody>
-                  <tr><td>Symbol:</td><td>{marketData.symbol}</td></tr>
-                  <tr><td>Timestamp:</td><td>{marketData.timestamp}</td></tr>
-                  <tr><td>Mid Price:</td><td>{marketData.mid_price?.toFixed(2) || 'N/A'}</td></tr>
-                  <tr><td>Signal:</td><td>{marketData.signal}</td></tr>
-                  <tr><td>Signal Strength:</td><td>{marketData.signal_strength?.toFixed(2) || 'N/A'}</td></tr>
-                  <tr><td>Z-Score:</td><td>{marketData.raw_zscore?.toFixed(2) || 'N/A'}</td></tr>
-                </tbody>
-              </table>
-            </section>
-          )}
-          {/* Price Chart */}
-          <section className="dashboard-section chart-section chart-section-prices">
-            {history.timestamp.length > 0 ? (
-              <Plot
-                data={[
-                  {
-                    x: history.timestamp,
-                    y: history.mid_price,
-                    type: 'scatter',
-                    mode: 'lines',
-                    name: 'Mid Price',
-                    line: { color: '#01DBB0', width: 2 },
-                    hoverinfo: 'x+y'
-                  }
-                ]}
-                layout={{
-                  ...commonLayout,
-                  title: {
-                    text: `Market Prices for ${selectedSymbol}`,
-                    font: { color: '#ffffff' }
-                  },
-                  hovermode: 'x unified',
-                  yaxis: {
-                    ...commonLayout.yaxis,
-                    title: 'Price (USDT)',
-                  }
-                }}
-                style={{ width: '100%', height: '400px' }}
-                useResizeHandler={true}
-                config={{
-                  displayModeBar: true,
-                  responsive: true,
-                  displaylogo: false,
-                  modeBarButtonsToRemove: ['lasso2d', 'select2d']
-                }}
-              />
-            ) : (
-              <div className="loading-message">
-                Waiting for price data for ${selectedSymbol}...
-              </div>
-            )}
-          </section>
-          {/* Signals Chart */}
-          <section className="dashboard-section chart-section chart-section-signals">
-            {history.timestamp.length > 0 ? (
-              <Plot
-                data={[
-                  {
-                    x: history.timestamp,
-                    y: history.raw_zscore,
-                    type: 'scatter',
-                    mode: 'lines',
-                    name: 'Z-Score',
-                    line: { color: '#FFD700', width: 2 },
-                    hoverinfo: 'x+y'
-                  },
-                  {
-                    x: history.timestamp,
-                    y: history.signal_strength,
-                    type: 'scatter',
-                    mode: 'lines',
-                    name: 'Signal Strength',
-                    line: { color: '#0197ae', width: 2 },
-                    hoverinfo: 'x+y'
-                  },
-                  {
-                    x: history.timestamp,
-                    y: history.adaptive_threshold,
-                    type: 'scatter',
-                    mode: 'lines',
-                    name: 'Adaptive Threshold',
-                    line: { color: '#ff6b6b', width: 2, dash: 'dash' },
-                    hoverinfo: 'x+y'
-                  }
-                ]}
-                layout={{
-                  ...commonLayout,
-                  title: {
-                    text: `Trading Signals for ${selectedSymbol}`,
-                    font: { color: '#ffffff' }
-                  },
-                  hovermode: 'x unified',
-                  yaxis: {
-                    ...commonLayout.yaxis,
-                    title: 'Signal Values',
-                    zeroline: true,
-                    zerolinecolor: '#666666'
-                  }
-                }}
-                style={{ width: '100%', height: '400px' }}
-                useResizeHandler={true}
-                config={{
-                  displayModeBar: true,
-                  responsive: true,
-                  displaylogo: false,
-                  modeBarButtonsToRemove: ['lasso2d', 'select2d']
-                }}
-              />
-            ) : (
-              <div className="loading-message">
-                Waiting for signal data for ${selectedSymbol}...
-              </div>
-            )}
-          </section>
-          {/* Recent Trades Section */}
-          <section className="dashboard-section trades-section">
-            <h2>Recent Trades</h2>
-            {recentTrades && recentTrades.length > 0 ? (
-              <div className="trades-table-container">
-                <table className="trades-table">
-                  <thead>
-                    <tr>
-                      <th>Timestamp</th>
-                      <th>Symbol</th>
-                      <th>Buy Exchange</th>
-                      <th>Buy Price</th>
-                      <th>Sell Exchange</th>
-                      <th>Sell Price</th>
-                      <th>Amount</th>
-                      <th>PnL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentTrades.map((trade, index) => (
-                      <tr key={index}>
-                        <td>{new Date(trade.timestamp).toLocaleString()}</td>
-                        <td>{trade.symbol}</td>
-                        <td>{trade.buy_exchange}</td>
-                        <td>{trade.buy_price?.toFixed(2)}</td>
-                        <td>{trade.sell_exchange}</td>
-                        <td>{trade.sell_price?.toFixed(2)}</td>
-                        <td>{trade.amount}</td>
-                        <td className={trade.pnl > 0 ? 'pnl-positive' : trade.pnl < 0 ? 'pnl-negative' : ''}>{trade.pnl?.toFixed(6)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p>No recent trades.</p>
-            )}
-          </section>
-        </main>
-      </div>
+    <div className="pnl-tooltip" style={tooltipStyle}>
+      <div style={{ marginBottom: 4, fontWeight: 600 }}>Trade #{label}</div>
+      {payload.map((entry) => (
+        <div key={entry.dataKey} style={{ color: entry.color, fontSize: 12 }}>
+          {entry.name}: {Number(entry.value).toFixed(6)}
+        </div>
+      ))}
     </div>
   );
 }
 
-// Wrap AppContent with QueryClientProvider
+function AppContent() {
+  const [selectedSymbol, setSelectedSymbol] = useState(SYMBOLS[0]);
+  const [isRunning, setIsRunning] = useState(true);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [history, setHistory] = useState([]);
+  const [priceTrend, setPriceTrend] = useState({ binance: '', kraken: '' });
+  const prevPricesRef = useRef({ binance: null, kraken: null });
+
+  const pollInterval = isRunning ? REFRESH_INTERVAL : false;
+
+  const { data: marketData, error: marketDataError, isLoading: marketDataLoading, isFetching } = useQuery(
+    ['marketData', selectedSymbol],
+    () => api.getMarketData(selectedSymbol),
+    { refetchInterval: pollInterval, retry: 1 }
+  );
+
+  const { data: simulationStatus, isLoading: simStatusLoading } = useQuery(
+    'simulationStatus',
+    api.getSimulationStatus,
+    { refetchInterval: pollInterval, retry: 1 }
+  );
+
+  const { data: recentTrades, isLoading: tradesLoading } = useQuery(
+    'recentTrades',
+    () => api.getRecentTrades(MAX_ACTIVITY_ROWS),
+    { refetchInterval: pollInterval, retry: 1 }
+  );
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!marketData) return;
+    const threshold = marketData.adaptive_threshold ?? 1;
+    const b = marketData.binance_price ?? marketData.mid_price ?? null;
+    const k = marketData.kraken_price ?? null;
+
+    setHistory((prev) => [
+      ...prev,
+      {
+        time: formatChartTime(marketData.timestamp),
+        binance: b ?? 0,
+        kraken: k ?? 0,
+        signalStrength: marketData.signal_strength ?? 0,
+        threshold,
+      },
+    ].slice(-MAX_HISTORY_POINTS));
+
+    const prev = prevPricesRef.current;
+    if (prev.binance != null && prev.kraken != null && b != null && k != null) {
+      const bDelta = b - prev.binance;
+      const kDelta = k - prev.kraken;
+      setPriceTrend({
+        binance: getRelativePriceClass(bDelta, kDelta),
+        kraken: getRelativePriceClass(kDelta, bDelta),
+      });
+    }
+
+    prevPricesRef.current = { binance: b, kraken: k };
+  }, [marketData]);
+
+  useEffect(() => {
+    setHistory([]);
+    setPriceTrend({ binance: '', kraken: '' });
+    prevPricesRef.current = { binance: null, kraken: null };
+  }, [selectedSymbol]);
+
+  const activityRows = useMemo(() => {
+    return (recentTrades || []).map((trade, idx) => {
+      const gross = trade.gross_pnl ?? trade.amount * (trade.sell_price - trade.buy_price);
+      const fees = trade.fees ?? 0;
+      const side = tradeSide(trade);
+      return {
+        id: `${trade.timestamp}-${idx}`,
+        timestamp: trade.timestamp,
+        side,
+        route: `${trade.buy_exchange} → ${trade.sell_exchange}`,
+        gross,
+        fees,
+        net: trade.pnl ?? 0,
+      };
+    });
+  }, [recentTrades]);
+
+  const pnlHistory = useMemo(() => {
+    if (!recentTrades?.length) return [];
+    let cumGross = 0;
+    let cumFees = 0;
+    let cumNet = 0;
+    const sorted = [...recentTrades].reverse();
+    return sorted.map((t, i) => {
+      const gross = t.gross_pnl ?? t.amount * (t.sell_price - t.buy_price);
+      const fees = t.fees ?? 0;
+      cumGross += gross;
+      cumFees += fees;
+      cumNet += t.pnl ?? 0;
+      return {
+        index: i + 1,
+        gross: cumGross,
+        fees: cumFees,
+        pnl: cumNet,
+      };
+    });
+  }, [recentTrades]);
+
+  const isConnected = isRunning && !marketDataError && !!marketData;
+  const isLoading = marketDataLoading || simStatusLoading || tradesLoading;
+  const hasChartData = history.length > 0;
+
+  const binancePrice = marketData?.binance_price ?? marketData?.mid_price;
+  const krakenPrice = marketData?.kraken_price;
+  const spread = marketData?.spread ?? (binancePrice != null && krakenPrice != null ? binancePrice - krakenPrice : null);
+  const spreadPct = marketData?.spread_pct ?? (spread != null && krakenPrice ? (spread / krakenPrice) * 100 : null);
+  const signalStrength = marketData?.signal_strength ?? 0;
+  const adaptiveThreshold = marketData?.adaptive_threshold ?? 1;
+  const signalTriggered = signalStrength >= adaptiveThreshold;
+
+  const handleExportCsv = useCallback(() => {
+    exportActivityCsv(activityRows);
+  }, [activityRows]);
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <header className="top-bar">
+        <h1 className="top-bar-title">Cross-Exchange Statistical Arbitrage System</h1>
+        <div className="top-bar-right">
+          <div className="connection-status">
+            <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
+            {isConnected ? 'Connected' : isRunning ? 'Connecting…' : 'Stopped'}
+          </div>
+          <span className="current-time">{formatTime(currentTime)}</span>
+        </div>
+      </header>
+
+      <main className="dashboard">
+        {marketDataError && (
+          <div className="error-banner">
+            Unable to load market data. Check that the backend is running at {API_BASE_URL}.
+          </div>
+        )}
+
+        <section>
+          <h2 className="section-header">Market Overview</h2>
+          <div className="market-overview">
+            <div className="card">
+              <div className="card-title">Binance — {selectedSymbol}</div>
+              {isLoading && !binancePrice ? (
+                <div className="skeleton skeleton-value" />
+              ) : (
+                <div className={`card-value price-trend ${priceTrend.binance || ''}`}>
+                  {binancePrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}
+                </div>
+              )}
+            </div>
+            <div className="card">
+              <div className="card-title">Kraken — {selectedSymbol}</div>
+              {isLoading && !krakenPrice ? (
+                <div className="skeleton skeleton-value" />
+              ) : (
+                <div className={`card-value price-trend ${priceTrend.kraken || ''}`}>
+                  {krakenPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}
+                </div>
+              )}
+            </div>
+            <div className="card">
+              <div className="card-title">Spread</div>
+              {isLoading && spread == null ? (
+                <div className="skeleton skeleton-value" />
+              ) : (
+                <>
+                  <div className={`card-value ${spread >= 0 ? 'positive' : 'negative'}`}>
+                    {spread != null ? `${spread >= 0 ? '+' : ''}${spread.toFixed(2)}` : '—'}
+                  </div>
+                  <div className={`card-subvalue ${spreadPct >= 0 ? 'positive' : 'negative'}`}>
+                    {spreadPct != null ? `${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(4)}%` : ''}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="card">
+              <div className="card-title">Signal Strength</div>
+              {isLoading && !marketData ? (
+                <div className="skeleton skeleton-value" />
+              ) : (
+                <>
+                  <div className={`zscore-display card-value ${getSignalClass(signalStrength, adaptiveThreshold)}`}>
+                    {formatMetric(signalStrength)}
+                  </div>
+                  <div className="card-subvalue">
+                    Threshold: {formatMetric(adaptiveThreshold)}
+                    {signalTriggered && ` · ${marketData?.signal} triggered`}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          <p className="chart-legend-hint price-legend-hint">
+            Binance/Kraken stay <span className="positive">green</span> or <span className="negative">red</span> until the next tick — whichever exchange moved more vs the other.
+          </p>
+        </section>
+
+        <section className="charts-stack">
+          <div className="card chart-card chart-card-tall">
+            <div className="card-title">Price Comparison</div>
+            {!hasChartData ? (
+              <div className="skeleton skeleton-chart-tall" />
+            ) : (
+              <div className="chart-container chart-container-tall">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={history} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
+                    <YAxis stroke="#6C757D" fontSize={11} domain={['auto', 'auto']} tick={{ fill: '#6C757D' }} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                    <Line type="monotone" dataKey="binance" name="Binance" stroke="#0D6EFD" dot={false} strokeWidth={2} {...CHART_ANIMATION} />
+                    <Line type="monotone" dataKey="kraken" name="Kraken" stroke="#FD7E14" dot={false} strokeWidth={2} {...CHART_ANIMATION} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          <div className="card chart-card chart-card-tall">
+            <div className="card-title">Signal Engine</div>
+            <p className="chart-legend-hint">Trade when strength (green) crosses the adaptive threshold (red).</p>
+            {!hasChartData ? (
+              <div className="skeleton skeleton-chart-tall" />
+            ) : (
+              <div className="chart-container chart-container-tall">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={history} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
+                    <YAxis stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                    <Line type="monotone" dataKey="signalStrength" name="Signal Strength" stroke="#198754" dot={false} strokeWidth={2.5} {...CHART_ANIMATION} />
+                    <Line type="monotone" dataKey="threshold" name="Adaptive Threshold" stroke="#DC3545" dot={false} strokeWidth={2} strokeDasharray="6 4" {...CHART_ANIMATION} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="activity-section">
+          <div className="card">
+            <div className="card-title">Trade Activity</div>
+            <p className="chart-legend-hint">
+              Executed arbs: gross spread capture, fees (both exchanges), net PnL. Session fees:{' '}
+              <strong>{formatUsd(simulationStatus?.total_fees_paid ?? 0)}</strong> USDT
+            </p>
+            <div className="signal-table-wrap">
+              {tradesLoading && !activityRows.length ? (
+                <div className="skeleton skeleton-chart" style={{ height: 160 }} />
+              ) : activityRows.length === 0 ? (
+                <div className="empty-state">No trades yet — activity appears after the first simulated fill</div>
+              ) : (
+                <table className="signal-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Side</th>
+                      <th>Route</th>
+                      <th>Gross</th>
+                      <th>Fees</th>
+                      <th>Net PnL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activityRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{new Date(row.timestamp).toLocaleString()}</td>
+                        <td className={row.side === 'BUY' ? 'signal-buy' : 'signal-sell'}>{row.side}</td>
+                        <td className="route-cell">{row.route}</td>
+                        <td className={row.gross >= 0 ? 'signal-buy' : 'signal-sell'}>{formatUsd(row.gross)}</td>
+                        <td className="negative">{formatUsd(row.fees)}</td>
+                        <td className={row.net >= 0 ? 'signal-buy' : 'signal-sell'}>{formatUsd(row.net)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="export-row">
+              <button type="button" className="btn btn-export" onClick={handleExportCsv} disabled={!activityRows.length}>
+                Export CSV
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="bottom-section">
+          <div className="card controls-panel">
+            <div className="card-title">System Controls &amp; Stats</div>
+            <div className="control-row">
+              <button type="button" className="btn btn-start" onClick={() => setIsRunning(true)} disabled={isRunning}>
+                Start
+              </button>
+              <button type="button" className="btn btn-stop" onClick={() => setIsRunning(false)} disabled={!isRunning}>
+                Stop
+              </button>
+              <select
+                className="pair-select"
+                value={selectedSymbol}
+                onChange={(e) => setSelectedSymbol(e.target.value)}
+                aria-label="Trading pair"
+              >
+                {SYMBOLS.map((sym) => (
+                  <option key={sym} value={sym}>{sym}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="stats-grid">
+              <div className="stat-item">
+                <div className="stat-label">Total Trades</div>
+                <div className="stat-value">{simulationStatus?.total_trades ?? 0}</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Current Signal</div>
+                <div className="stat-value">{marketData?.signal ?? 'HOLD'}</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Cumulative PnL</div>
+                <div className={`stat-value ${(simulationStatus?.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'}`}>
+                  {simulationStatus?.total_pnl?.toFixed(6) ?? '0.000000'}
+                </div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Win Rate</div>
+                <div className="stat-value">{simulationStatus?.win_rate?.toFixed(1) ?? '0.0'}%</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Total Fees</div>
+                <div className="stat-value negative">{formatUsd(simulationStatus?.total_fees_paid ?? 0)}</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Sharpe Ratio</div>
+                <div className="stat-value">
+                  {simulationStatus?.sharpe_ratio != null ? simulationStatus.sharpe_ratio.toFixed(2) : 'N/A'}
+                </div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-label">Max Drawdown</div>
+                <div className="stat-value negative">
+                  {simulationStatus?.max_drawdown != null
+                    ? formatPercent(simulationStatus.max_drawdown)
+                    : 'N/A'}
+                </div>
+              </div>
+            </div>
+
+            {isFetching && isRunning && (
+              <div className="card-subvalue" style={{ marginTop: 12 }}>Refreshing data…</div>
+            )}
+          </div>
+
+          <div className="card pnl-chart-card">
+            <div className="card-title">Cumulative Performance</div>
+            <p className="chart-legend-hint">
+              <span style={{ color: '#86c99a' }}>—</span> Gross income &nbsp;
+              <span style={{ color: '#adb5bd' }}>---</span> Fees &nbsp;
+              <span style={{ color: '#198754', fontWeight: 600 }}>—</span> Net PnL
+            </p>
+            {pnlHistory.length === 0 ? (
+              <div className="empty-state">PnL breakdown appears after trades execute</div>
+            ) : (
+              <div className="chart-container pnl-chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={pnlHistory} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+                    <XAxis dataKey="index" stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }} />
+                    <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }} />
+                    <Tooltip content={<PnlTooltip />} />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="gross"
+                      name="Gross (income)"
+                      stroke="#86c99a"
+                      fill="#86c99a"
+                      fillOpacity={0.12}
+                      strokeWidth={1}
+                      {...CHART_ANIMATION}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="fees"
+                      name="Fees (expense)"
+                      stroke="#adb5bd"
+                      strokeWidth={1.5}
+                      strokeDasharray="4 4"
+                      dot={false}
+                      {...CHART_ANIMATION}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="pnl"
+                      name="Net PnL"
+                      stroke={(simulationStatus?.total_pnl ?? 0) >= 0 ? '#198754' : '#DC3545'}
+                      strokeWidth={3}
+                      dot={false}
+                      {...CHART_ANIMATION}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    </ThemeProvider>
+  );
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -583,4 +568,3 @@ export default function App() {
     </QueryClientProvider>
   );
 }
-

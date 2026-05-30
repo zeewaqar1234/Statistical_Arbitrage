@@ -6,3 +6,5 @@ logs/
 .env
 **/*.egg-info/
 **/node_modules/
+backend.log
+.DS_Store

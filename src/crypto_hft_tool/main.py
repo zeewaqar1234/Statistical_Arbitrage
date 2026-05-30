@@ -1,12 +1,13 @@
 from fastapi import FastAPI, HTTPException, Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 import time
 from datetime import datetime, timezone
 import asyncio
 from fastapi.responses import JSONResponse
 import os
+import numpy as np
 import pandas as pd
 
 # Centralized logging setup
@@ -31,8 +32,8 @@ setup_logging(level=LOG_LEVEL)
 logger = get_logger(__name__)
 
 app = FastAPI(
-    title="Crypto HFT Tool API",
-    description="API for the Crypto High-Frequency Trading Tool simulation and data.",
+    title="Cross-Exchange Statistical Arbitrage System API",
+    description="API for cross-exchange statistical arbitrage simulation and market data.",
     version="0.1.0"
 )
 
@@ -146,6 +147,10 @@ class MarketDataResponse(BaseModel):
     ask_price: float
     mid_price: float
     total_volume: float
+    binance_price: Optional[float] = None
+    kraken_price: Optional[float] = None
+    spread: Optional[float] = None
+    spread_pct: Optional[float] = None
     signal: str = "HOLD"
     trade_executed: bool = False
     reason: str = "Initial state"
@@ -167,10 +172,30 @@ class SimulationStatusResponse(BaseModel):
     win_rate: float
     avg_pnl_per_trade: float
     total_fees_paid: float
+    sharpe_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
     # Strategy Parameters
     z_score_threshold: float
     trade_amount: float
     exit_z_threshold: float
+
+
+def _compute_performance_metrics(trades: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    """Sharpe ratio and max drawdown from simulated trade PnLs."""
+    if len(trades) < 2:
+        return None, None
+    pnls = np.array([float(t.get('pnl', 0)) for t in trades], dtype=float)
+    std = float(np.std(pnls))
+    if std <= 0:
+        sharpe = None
+    else:
+        sharpe = float(np.mean(pnls) / std * np.sqrt(252))
+    cumulative = np.cumsum(pnls)
+    peak = np.maximum.accumulate(cumulative)
+    denom = np.where(peak != 0, np.abs(peak), 1.0)
+    drawdowns = (cumulative - peak) / denom
+    max_dd = float(np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
+    return sharpe, max_dd
 
 class RecentTradesResponse(BaseModel):
     trades: List[Dict[str, Any]]
@@ -328,7 +353,7 @@ async def startup_event():
 
 @app.get("/")
 async def read_root():
-    return {"message": "Welcome to Crypto HFT Tool API"}
+    return {"message": "Welcome to Cross-Exchange Statistical Arbitrage System API"}
 
 @app.get("/api/v1/market_data/all", response_model=MarketDataAllResponse)
 async def get_all_market_data():
@@ -355,17 +380,27 @@ async def get_market_data(
     symbol: str = Path(..., description="The symbol to get market data for, e.g., BTC/USDT")
 ):
     try:
-        # Get market data from data provider
-        data = await data_provider.get_market_data_rest(symbol, ARBITRAGE_EXCHANGES["primary"])
-        if not data:
+        primary_ex = ARBITRAGE_EXCHANGES["primary"]
+        secondary_ex = ARBITRAGE_EXCHANGES["secondary"]
+        data_primary = await data_provider.get_market_data_rest(symbol, primary_ex)
+        data_secondary = await data_provider.get_market_data_rest(symbol, secondary_ex)
+        if not data_primary or not data_secondary:
             raise HTTPException(status_code=404, detail=f"No data available for {symbol}")
 
-        # Calculate spread for signal processing
-        current_market_spread = float(data['bid']) - float(data['ask'])
-        avg_volume = float(data.get('baseVolume', 0) or data.get('volume', 0))
+        binance_mid = (float(data_primary['bid']) + float(data_primary['ask'])) / 2
+        kraken_mid = (float(data_secondary['bid']) + float(data_secondary['ask'])) / 2
+        spread_abs = binance_mid - kraken_mid
+        spread_pct = (spread_abs / kraken_mid) * 100 if kraken_mid else 0.0
+
+        # Calculate spread for signal processing (arb spread)
+        current_market_spread = float(data_primary['bid']) - float(data_secondary['ask'])
+        avg_volume = (
+            float(data_primary.get('baseVolume', 0) or data_primary.get('volume', 0))
+            + float(data_secondary.get('baseVolume', 0) or data_secondary.get('volume', 0))
+        ) / 2
         
         # Get timestamp
-        api_timestamp_str = data['timestamp']
+        api_timestamp_str = data_primary['timestamp']
         if 'Z' in api_timestamp_str:
             timestamp_dt = datetime.fromisoformat(api_timestamp_str.replace('Z', '+00:00'))
         else:
@@ -400,22 +435,32 @@ async def get_market_data(
                 signal_strength=0.0
             )
 
+        zscore = best_metrics.zscore
+        threshold = best_metrics.threshold
+        signal = "HOLD"
+        if best_metrics.signal_strength >= threshold:
+            signal = "SELL" if zscore > 0 else "BUY"
+
         return MarketDataResponse(
             timestamp=timestamp_dt.isoformat(),
             symbol=symbol,
-            bid_price=float(data['bid']),
-            ask_price=float(data['ask']),
-            mid_price=(float(data['bid']) + float(data['ask'])) / 2,
+            bid_price=float(data_primary['bid']),
+            ask_price=float(data_primary['ask']),
+            mid_price=binance_mid,
             total_volume=avg_volume,
-            signal="HOLD",  # Default signal
+            binance_price=binance_mid,
+            kraken_price=kraken_mid,
+            spread=spread_abs,
+            spread_pct=spread_pct,
+            signal=signal,
             trade_executed=False,
             reason="Initial state",
-            raw_zscore=best_metrics.zscore,
+            raw_zscore=zscore,
             volume_weighted_zscore=best_metrics.volume_weighted_zscore,
             momentum_score=best_metrics.momentum_score,
             correlation_filter=best_metrics.correlation_filter,
             volatility=best_metrics.volatility,
-            adaptive_threshold=best_metrics.threshold,
+            adaptive_threshold=threshold,
             signal_strength=best_metrics.signal_strength
         )
     except Exception as e:
@@ -431,6 +476,7 @@ async def get_simulation_status():
     winning_trades = sum(1 for trade in simulator.trades if trade.get('pnl', 0) > 0)
     win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0.0
     avg_pnl_per_trade = simulator.total_pnl / total_trades if total_trades > 0 else 0.0
+    sharpe_ratio, max_drawdown = _compute_performance_metrics(simulator.trades)
 
     return SimulationStatusResponse(
         total_pnl=simulator.total_pnl,
@@ -438,6 +484,8 @@ async def get_simulation_status():
         win_rate=win_rate,
         avg_pnl_per_trade=avg_pnl_per_trade,
         total_fees_paid=simulator.total_fees_paid,
+        sharpe_ratio=sharpe_ratio,
+        max_drawdown=max_drawdown,
         # Strategy Parameters from main.py globals
         z_score_threshold=Z_SCORE_THRESHOLD,
         trade_amount=TRADE_AMOUNT, # This is the global TRADE_AMOUNT
@@ -480,15 +528,23 @@ async def get_recent_trades(limit: int = 10):
             logger.error(f"Error formatting timestamp '{trade_timestamp}': {e}")
             # timestamp_str remains "Invalid Timestamp"
 
+        amount = float(trade_dict.get('amount', 0.0))
+        buy_price = float(trade_dict.get('buy_price', 0.0))
+        sell_price = float(trade_dict.get('sell_price', 0.0))
+        fees = float(trade_dict.get('fees', 0.0))
+        gross_pnl = amount * (sell_price - buy_price)
+
         recent_trades.append({
             "timestamp": timestamp_str,
             "symbol": trade_dict.get('symbol', 'N/A'),
             "buy_exchange": trade_dict.get('buy_exchange', 'N/A'),
-            "buy_price": trade_dict.get('buy_price', 0.0),
+            "buy_price": buy_price,
             "sell_exchange": trade_dict.get('sell_exchange', 'N/A'),
-            "sell_price": trade_dict.get('sell_price', 0.0),
-            "amount": trade_dict.get('amount', 0.0),
-            "pnl": trade_dict.get('pnl', 0.0)
+            "sell_price": sell_price,
+            "amount": amount,
+            "gross_pnl": gross_pnl,
+            "fees": fees,
+            "pnl": float(trade_dict.get('pnl', 0.0)),
         })
     return RecentTradesResponse(trades=recent_trades)
 
