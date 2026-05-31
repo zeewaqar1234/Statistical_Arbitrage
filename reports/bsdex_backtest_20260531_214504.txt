@@ -1,0 +1,26 @@
+========================================================================
+BSDEX vs World Backtest Report
+Generated: 2026-05-31T19:45:04.115627+00:00
+========================================================================
+
+HONESTY NOTES (read before sharing this report):
+  • Venue A prices are sourced from Bitstamp EUR order book, NOT real BSDEX.
+    BSDEX API requires authentication; this is a proxy with comparable EU
+    exchange characteristics.
+  • Venue B (World) = Binance USDT price converted to EUR via ECB FX rate.
+    This is NOT a live LMAX connection — LMAX fee schedule is applied as
+    a modelling assumption only.
+  • bsdex_institutional fees are assumed / negotiated rates, NOT confirmed.
+  • Phase data is unavailable for historical rows (Bitstamp has no phases).
+    Post-auction convergence trades are therefore zero in this run.
+
+------------------------------------------------------------------------
+ market             preset  trades  win_rate_pct  net_pnl_eur  total_fees_eur  sharpe_ratio  max_drawdown_eur  breakeven_spread_pct  post_auction_trades
+btc-eur        retail_demo      51        100.00      14.4456        209.2341      741.3575               0.0                  0.41                    0
+btc-eur institutional_best    1686        100.00    1209.5110       3036.0712      922.5184               0.0                  0.18                    0
+btc-eur  institutional_mid    1369        100.00     738.1412       2877.0709      701.9978               0.0                  0.21                    0
+eth-eur        retail_demo     128        100.00      59.1176        525.1510      792.5584               0.0                  0.41                    0
+eth-eur institutional_best    2309         99.96    1974.3303       4158.0414      888.1347               0.0                  0.18                    0
+eth-eur  institutional_mid    1836        100.00    1346.7556       3858.7240      789.5729               0.0                  0.21                    0
+
+========================================================================

@@ -186,6 +186,61 @@ STRATEGY_DEFAULTS = {
 # Portfolio sizing (moved out of enhanced_risk_manager.py)
 PORTFOLIO_BASE_VALUE_USD = 10000.0
 
+# =============================================================================
+# BSDEX strategy config — ADDITIVE, does not affect Binance/Kraken paths.
+# =============================================================================
+
+# BSDEX public API base URLs.
+# NOTE: Despite the "api-public" subdomain, BSDEX requires HMAC authentication
+# for all endpoints (including WebSocket).  Real BSDEX data requires a BSDEX
+# account + API key set via BSDEX_API_KEY / BSDEX_API_SECRET env vars.
+# When no BSDEX keys are present the strategy falls back to Bitstamp's
+# truly-public EUR order book (a comparable regulated EU exchange).
+BSDEX_API_REST = "https://api-public.bsdex.de"
+BSDEX_API_WS   = "wss://api-public.bsdex.de/api/v1/ws"
+BSDEX_MARKETS  = ["btc-eur", "eth-eur"]
+BSDEX_MARKET_MAP = {          # BSDEX market -> Binance world symbol (USDT)
+    "btc-eur": "BTC/USDT",
+    "eth-eur": "ETH/USDT",
+}
+BSDEX_BITSTAMP_MAP = {        # BSDEX market -> Bitstamp ticker (EUR fallback)
+    "btc-eur": "btceur",
+    "eth-eur": "etheur",
+}
+
+# EUR/USD FX rate source (Frankfurter wraps the ECB daily reference rate).
+FX_RATE_SOURCE   = "https://api.frankfurter.app/latest?from=USD&to=EUR"
+FX_REFRESH_SEC   = 60          # Re-fetch FX rate every 60 s
+
+# Active fee preset for the BSDEX tab (can be changed at runtime via API).
+BSDEX_ACTIVE_FEE_PRESET = "retail_demo"
+
+# BSDEX API credentials (optional — enables real BSDEX data instead of Bitstamp proxy).
+BSDEX_CREDENTIALS = {
+    "apiKey": os.getenv("BSDEX_API_KEY", ""),
+    "secret": os.getenv("BSDEX_API_SECRET", ""),
+}
+
+# Fee schedules for the BSDEX vs World strategy (decimals; 0.0020 = 0.20 %).
+# BSDEX retail: published at bsdex.de/en/fees (verified 2025).
+# BSDEX institutional: negotiated — NOT publicly confirmed; labelled ASSUMPTION.
+# LMAX Digital: public reviews suggest 0-2 bps maker / 3-6 bps taker; confirm before live use.
+BSDEX_STRATEGY_FEES = {
+    "bsdex_retail":        {"maker": 0.0020, "taker": 0.0035},
+    "bsdex_institutional": {"maker": 0.0010, "taker": 0.0015},  # ASSUMPTION — label as such
+    "lmax_low":            {"maker": 0.0000, "taker": 0.0003},  # 0 bps / 3 bps
+    "lmax_high":           {"maker": 0.0002, "taker": 0.0006},  # 2 bps / 6 bps
+}
+
+# Selectable combined presets for the BSDEX tab fee dropdown.
+# Each preset: {bsdex: <fee key>, world: <fee key>}
+BSDEX_FEE_PRESETS = {
+    "retail_demo":        {"bsdex": "bsdex_retail",        "world": "lmax_high"},
+    "institutional_best": {"bsdex": "bsdex_institutional", "world": "lmax_low"},
+    "institutional_mid":  {"bsdex": "bsdex_institutional", "world": "lmax_high"},
+}
+
+# =============================================================================
 # Risk Management Settings
 RISK_SETTINGS = {
     'max_position_value': {
