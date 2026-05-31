@@ -1,0 +1,40 @@
+BACKTEST SUMMARY — Zero fees (illustrative only — do NOT report as a real scenario)
+============================================================
+
+Configuration
+  Fee tier          : zero_fee (Zero fees (illustrative only — do NOT report as a real scenario))
+  Trade size        : 0.001 base-asset units
+  Data directory    : /Users/syedzeewaqarhussain/crypto_hft_tool/data/processed
+
+Headline Numbers
+  Total trades      : 138
+  Gross PnL         : $0.0538
+  Total fees paid   : $0.0000
+  Net PnL           : $0.0538
+  Win rate          : 100.00%
+  Sharpe ratio      : 21.494
+  Max drawdown (USD): $0.0000
+
+Per-symbol breakdown
+  BTC/USDT: 0 trades
+  ETH/USDT: 138 trades
+
+Per-timeframe breakdown
+  window=15: 30 trades, PnL=$0.0089
+  window=60: 39 trades, PnL=$0.0138
+  window=180: 35 trades, PnL=$0.0130
+  window=360: 34 trades, PnL=$0.0182
+
+Top 5 best trades
+  2026-05-31 11:40:18.419663 ETH/USDT pnl=$0.001461
+  2026-05-31 11:40:18.364619 ETH/USDT pnl=$0.001433
+  2026-05-31 11:40:18.303389 ETH/USDT pnl=$0.001416
+  2026-05-31 11:40:18.305387 ETH/USDT pnl=$0.001202
+  2026-05-31 11:40:18.318360 ETH/USDT pnl=$0.001053
+
+Top 5 worst trades
+  2026-05-31 11:40:18.335862 ETH/USDT pnl=$0.000002
+  2026-05-31 11:40:18.271525 ETH/USDT pnl=$0.000005
+  2026-05-31 11:40:18.381812 ETH/USDT pnl=$0.000009
+  2026-05-31 11:40:18.215897 ETH/USDT pnl=$0.000018
+  2026-05-31 11:40:18.420245 ETH/USDT pnl=$0.000021

@@ -1,0 +1,9 @@
+tier,tier_label,monthly_volume_required_usd,total_trades,total_pnl_usd,total_fees_usd,net_pnl_usd,win_rate_pct,sharpe_ratio,max_drawdown_usd
+retail,Retail (VIP 0 / Kraken Tier 0),0,0,0.0,0.0,0.0,0.0,0.0,0.0
+retail_bnb,Retail + BNB discount (25% off Binance),0,0,0.0,0.0,0.0,0.0,0.0,0.0
+vip3,Binance VIP 3 / Kraken Pro Tier 3,20000000,0,0.0,0.0,0.0,0.0,0.0,0.0
+vip5,Binance VIP 5 / Kraken Pro Tier 5,150000000,0,0.0,0.0,0.0,0.0,0.0,0.0
+vip9,Binance VIP 9 / Kraken Pro Tier 10,5000000000,0,0.0,0.0,0.0,0.0,0.0,0.0
+market_maker,Registered Market Maker (negative maker fees),100000000,0,0.0,0.0,0.0,0.0,0.0,0.0
+dekabank_proxy,DekaBank-scale proxy (assumed institutional tier),100000000,0,0.0,0.0,0.0,0.0,0.0,0.0
+zero_fee,Zero fees (illustrative only — do NOT report as a real scenario),0,138,0.0538,0.0,0.0538,100.0,21.494,0.0

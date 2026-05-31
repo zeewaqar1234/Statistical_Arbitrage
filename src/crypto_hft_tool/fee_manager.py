@@ -2,6 +2,7 @@ from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from .fee_tiers import get_preset, TierFees
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -11,35 +12,23 @@ class VolumeTier:
     maker_fee: float
     taker_fee: float
     min_volume: float
-    currency: str  # 'BTC' or 'USD'
+    currency: str  # 'USD'
 
 class FeeManager:
     """
-    Manages exchange fees, volume tiers, and fee calculations for trades
+    Manages exchange fees and volume tracking.
+
+    Fee rates are now driven by a named tier preset from fee_tiers.py.
+    Pass tier_preset="retail" (default), "vip3", "vip5", "vip9",
+    "market_maker", "dekabank_proxy", or "zero_fee".
     """
-    def __init__(self):
-        # Default fee structure
-        self.exchange_fees = {
-            'binance': {
-                'default': {'maker': 0.0010, 'taker': 0.0010},  # 0.10%
-                'volume_tiers': [
-                    VolumeTier(0.0009, 0.0009, 50.0, 'BTC'),   # 50 BTC volume
-                    VolumeTier(0.0008, 0.0008, 100.0, 'BTC'),  # 100 BTC volume
-                    VolumeTier(0.0007, 0.0007, 500.0, 'BTC'),  # 500 BTC volume
-                ]
-            },
-            'kraken': {
-                'default': {'maker': 0.0016, 'taker': 0.0026},  # 0.16%/0.26%
-                'volume_tiers': [
-                    VolumeTier(0.0014, 0.0024, 50000.0, 'USD'),  # 50K USD volume
-                    VolumeTier(0.0012, 0.0022, 100000.0, 'USD'), # 100K USD volume
-                    VolumeTier(0.0010, 0.0020, 250000.0, 'USD'), # 250K USD volume
-                ]
-            }
-        }
-        
-        # Track 30-day rolling volume
-        self.volume_history = {
+    def __init__(self, tier_preset: str = "retail"):
+        from .fee_tiers import get_preset
+        self.tier: TierFees = get_preset(tier_preset)
+        self.tier_preset_name = tier_preset
+
+        # Track 30-day rolling volume (used for reporting, not for fee lookup)
+        self.volume_history: Dict[str, list] = {
             'binance': [],
             'kraken': []
         }
@@ -61,35 +50,20 @@ class FeeManager:
             if ts > cutoff
         ]
         
-    def get_30d_volume(self, exchange: str, in_btc: bool = False) -> float:
+    def get_30d_volume(self, exchange: str) -> float:
+        """Return 30-day rolling trading volume in USD.
+
+        Volume is stored in USD at the time each trade is recorded via
+        add_volume(amount, price), so no currency conversion is needed here.
+        The old in_btc parameter and the hardcoded BTC price of 30000 have
+        been removed to avoid stale conversion errors.
         """
-        Calculate 30-day trading volume for an exchange
-        """
-        total_volume = sum(vol for _, vol in self.volume_history[exchange])
-        if in_btc and exchange == 'binance':
-            # Convert USD volume to BTC (using approximate price)
-            # In production, this should use actual BTC price
-            total_volume = total_volume / 30000  # Approximate BTC price
-        return total_volume
+        return sum(vol for _, vol in self.volume_history[exchange])
         
     def get_fees(self, exchange: str, is_maker: bool = False) -> float:
-        """
-        Get current fees based on 30-day volume
-        """
-        volume = self.get_30d_volume(exchange, in_btc=(exchange == 'binance'))
-        fee_type = 'maker' if is_maker else 'taker'
-        
-        # Get default fee
-        current_fee = self.exchange_fees[exchange]['default'][fee_type]
-        
-        # Check volume tiers
-        for tier in self.exchange_fees[exchange]['volume_tiers']:
-            if volume >= tier.min_volume:
-                current_fee = tier.maker_fee if is_maker else tier.taker_fee
-            else:
-                break
-                
-        return current_fee
+        """Return fee rate for the active tier preset."""
+        side = "maker" if is_maker else "taker"
+        return self.tier.get(exchange, side)  # type: ignore[arg-type]
         
     def estimate_fees(self, exchange: str, amount: float, price: float, is_maker: bool = False) -> float:
         """

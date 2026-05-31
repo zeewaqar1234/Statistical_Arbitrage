@@ -1,0 +1,49 @@
+FEE TIER COMPARISON — same strategy, same data, different fee tiers
+======================================================================
+
+Tier                      Net PnL  Gross PnL       Fees  Trades    Win%  Sharpe
+----------------------------------------------------------------------
+retail                 $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+retail_bnb             $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+vip3                   $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+vip5                   $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+vip9                   $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+market_maker           $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+dekabank_proxy         $   0.0000 $   0.0000 $   0.0000       0   0.00%   0.000
+zero_fee               $   0.0538 $   0.0538 $   0.0000     138 100.00%  21.494
+
+
+Detailed notes
+----------------------------------------------------------------------
+
+Retail (VIP 0 / Kraken Tier 0)
+  Required 30d volume : $0
+  Note                : Default published fees, no discounts.
+
+Retail + BNB discount (25% off Binance)
+  Required 30d volume : $0
+  Note                : Holding BNB enables 25% Binance fee discount. No Kraken equivalent.
+
+Binance VIP 3 / Kraken Pro Tier 3
+  Required 30d volume : $20,000,000
+  Note                : ~$20M/month volume. Realistic for a serious prop shop.
+
+Binance VIP 5 / Kraken Pro Tier 5
+  Required 30d volume : $150,000,000
+  Note                : ~$150M/month. Mid-size institutional.
+
+Binance VIP 9 / Kraken Pro Tier 10
+  Required 30d volume : $5,000,000,000
+  Note                : Top published tier. Effectively maker-rebate territory.
+
+Registered Market Maker (negative maker fees)
+  Required 30d volume : $100,000,000
+  Note                : Exchanges pay you to provide liquidity. Requires application + obligations.
+
+DekaBank-scale proxy (assumed institutional tier)
+  Required 30d volume : $100,000,000
+  Note                : DekaBank does not trade on Binance/Kraken directly — it routes through Boerse Stuttgart Digital. This preset is a *proxy* approximating the fees a Deka-scale player would face if running this strategy on a regulated venue with negotiated institutional rates. Treat as illustrative.
+
+Zero fees (illustrative only — do NOT report as a real scenario)
+  Required 30d volume : $0
+  Note                : Included to show gross PnL before any fee drag. Label clearly in any output — no real venue charges zero fees.

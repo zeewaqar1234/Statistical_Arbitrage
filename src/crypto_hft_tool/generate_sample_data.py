@@ -26,35 +26,39 @@ def generate_sample_data(symbol: str, num_rows: int = 1000):
     for i in range(num_rows):
         current_price = base_price * price_multiplier[i]
         
-        # Add some spread between exchanges
-        binance_spread = np.random.normal(0.5, 0.1)  # Average 0.5 USDT spread
-        kraken_spread = np.random.normal(-0.5, 0.1)  # Opposite direction
-        
-        # Generate order book data
+        # Both exchanges trade around the same mid-price with independent micro-noise.
+        # No injected cross-exchange offset — that would fabricate arbitrage.
+        binance_noise = np.random.normal(0, 0.5)   # USDT
+        kraken_noise  = np.random.normal(0, 0.5)
+
+        # Generate order book data (each exchange has a 1.0 USDT bid/ask spread)
         row = {
             'timestamp': timestamps[i],
-            'binance_bid': current_price + kraken_spread,
-            'binance_ask': current_price + kraken_spread + 1.0,  # 1.0 USDT spread
-            'kraken_bid': current_price + binance_spread,
-            'kraken_ask': current_price + binance_spread + 1.0,  # 1.0 USDT spread
+            'binance_bid': current_price + binance_noise,
+            'binance_ask': current_price + binance_noise + 1.0,
+            'kraken_bid': current_price + kraken_noise,
+            'kraken_ask': current_price + kraken_noise + 1.0,
         }
         data.append(row)
     
     return pd.DataFrame(data)
 
 def save_sample_data():
-    """Generate and save sample data for all configured symbols."""
-    # Create processed directory if it doesn't exist
+    """Generate and save SYNTHETIC data for unit-testing only.
+    
+    WARNING: This data is not suitable for backtesting strategy performance.
+    For real backtests use scripts/download_real_data.py to fetch genuine
+    1-minute candles from Binance and Kraken via ccxt.
+    """
     processed_dir = os.path.join(data_folder, "processed")
     os.makedirs(processed_dir, exist_ok=True)
-    
-    # Generate data for each symbol
+
     symbols = ["BTC/USDT", "ETH/USDT"]
     for symbol in symbols:
         df = generate_sample_data(symbol)
         output_file = os.path.join(processed_dir, f"{symbol.replace('/', '_')}.csv")
         df.to_csv(output_file, index=False)
-        print(f"Generated sample data for {symbol} at {output_file}")
+        print(f"[SYNTHETIC DATA — unit-test only] Saved {symbol} to {output_file}")
 
 if __name__ == "__main__":
     save_sample_data() 

@@ -16,16 +16,24 @@ from src.crypto_hft_tool.utils.logging_config import setup_logging, get_logger
 print(">>> RUNNING main.py FROM:", __file__)
 
 # Update imports to use absolute imports
-from src.crypto_hft_tool.data_provider import BaseDataProvider, SimulatedSingleExchangeDataProvider
+from src.crypto_hft_tool.data_provider import (
+    BaseDataProvider,
+    SimulatedSingleExchangeDataProvider,
+    CCXTSingleExchangeDataProvider,
+)
 from src.crypto_hft_tool.signals import RollingZScore
 from src.crypto_hft_tool.simulation import TradeSimulator
-from src.crypto_hft_tool.enhanced_signals import EnhancedSignalProcessor
+from src.crypto_hft_tool.enhanced_signals import EnhancedSignalProcessor, SignalMetrics
 from src.crypto_hft_tool.config import (
     SYMBOLS, TRADE_SETTINGS, ZSCORE_SETTINGS,
     DATA_PROVIDER_MODE, LOG_LEVEL, TARGET_EXCHANGE, ENHANCED_SIGNAL_SETTINGS,
     API_PORT, API_HOST, FEES, MIN_SPREAD_PCT,
-    ARBITRAGE_EXCHANGES
+    ARBITRAGE_EXCHANGES, STRATEGY_DEFAULTS,
 )
+from src.crypto_hft_tool.fee_manager import FeeManager
+from src.crypto_hft_tool.fee_tiers import list_presets, get_preset
+from src.crypto_hft_tool.backtest import Backtester
+import concurrent.futures
 
 # Configure logging once for the entire application
 setup_logging(level=LOG_LEVEL)
@@ -83,13 +91,11 @@ async def add_error_handling(request, call_next):
 # --- Global State Management (Simplified for initial setup) ---
 # In a production app, consider more robust state management or dependency injection.
 
-# Initialize DataProvider based on mode
-data_provider: BaseDataProvider = SimulatedSingleExchangeDataProvider(symbols=SYMBOLS)
-logger.info("Using SimulatedSingleExchangeDataProvider.")
+# Data provider is initialised below after all constants are defined (see DATA_PROVIDER_MODE block).
 
 # Store ZScore trackers per symbol
 # We need a default window size for RollingZScore if not dynamically configured per symbol via API
-DEFAULT_ZSCORE_WINDOW = 30  # Reduced from 100 to use less memory
+DEFAULT_ZSCORE_WINDOW = STRATEGY_DEFAULTS["z_score_window"]
 # Update to use all symbols instead of limiting to 3
 ACTIVE_SYMBOLS = SYMBOLS  # Track all symbols
 zscore_trackers: Dict[str, RollingZScore] = {}
@@ -109,12 +115,24 @@ for symbol in ACTIVE_SYMBOLS:
         vol_impact=ENHANCED_SIGNAL_SETTINGS['vol_impact']
     )
 
-# --- Constants/Configurable Params (used in logic) ---
-# Ideally, load from config.py or environment variables
-Z_SCORE_THRESHOLD = 1.2
-TRADE_AMOUNT = 0.001
-EXIT_Z_THRESHOLD = 0.3
-TRADE_COOLDOWN_SEC = 30  # Minimum seconds between trades per symbol
+# --- Constants/Configurable Params — sourced from config.py ---
+Z_SCORE_THRESHOLD        = STRATEGY_DEFAULTS["z_score_entry_threshold"]
+CAPITAL_PER_LEG_USDT     = STRATEGY_DEFAULTS["capital_per_leg_usdt"]
+EXIT_Z_THRESHOLD         = STRATEGY_DEFAULTS["z_score_exit_threshold"]
+TRADE_COOLDOWN_SEC       = STRATEGY_DEFAULTS["trade_cooldown_sec"]
+
+# --- Live-adjustable strategy config (updated via POST /api/v1/config) ---
+_live_fee_tier:             str   = "retail"
+_live_capital_per_leg_usdt: float = CAPITAL_PER_LEG_USDT
+_live_fee_manager:          FeeManager = FeeManager(tier_preset="retail")
+
+# --- Data provider: CCXT = real live prices, simulated = random walk ---
+if DATA_PROVIDER_MODE == "ccxt":
+    data_provider: BaseDataProvider = CCXTSingleExchangeDataProvider(SYMBOLS)
+    logger.info("Data provider: CCXT (real Binance + Kraken prices via public API).")
+else:
+    data_provider: BaseDataProvider = SimulatedSingleExchangeDataProvider(SYMBOLS)
+    logger.info("Data provider: Simulated (random walk, no real prices).")
 last_trade_time = {sym: 0 for sym in ACTIVE_SYMBOLS}  # Only initialize for active symbols
 
 # --- Pydantic Models for API Request/Response ---
@@ -167,17 +185,17 @@ class MarketDataAllResponse(BaseModel):
     portfolio_pnl: float = 0.0
 
 class SimulationStatusResponse(BaseModel):
-    total_pnl: float
-    total_trades: int
-    win_rate: float
-    avg_pnl_per_trade: float
-    total_fees_paid: float
-    sharpe_ratio: Optional[float] = None
-    max_drawdown: Optional[float] = None
-    # Strategy Parameters
-    z_score_threshold: float
-    trade_amount: float
-    exit_z_threshold: float
+    total_pnl:            float
+    total_trades:         int
+    win_rate:             float
+    avg_pnl_per_trade:    float
+    total_fees_paid:      float
+    sharpe_ratio:         Optional[float] = None
+    max_drawdown:         Optional[float] = None
+    z_score_threshold:    float
+    capital_per_leg_usdt: float
+    exit_z_threshold:     float
+    fee_tier:             str = "retail"
 
 
 def _compute_performance_metrics(trades: List[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
@@ -217,6 +235,20 @@ class TradeDetail(BaseModel):
     sell_price: float
     amount: float
     pnl: float
+
+class StrategyConfigResponse(BaseModel):
+    fee_tier:             str
+    fee_tier_label:       str
+    capital_per_leg_usdt: float
+    binance_taker_pct:    float
+    kraken_taker_pct:     float
+    combined_fee_pct:     float   # combined cost per round-trip (buy leg + sell leg)
+    break_even_spread_pct: float  # minimum spread% required to trade profitably
+    available_tiers:      List[str]
+
+class StrategyConfigRequest(BaseModel):
+    fee_tier:             Optional[str]   = None
+    capital_per_leg_usdt: Optional[float] = None
 
 # --- Background Trading Loop ---
 async def trading_loop():
@@ -264,40 +296,36 @@ async def trading_loop():
                     continue
                 # Determine trading signal and simulate trade
                 if best_metrics and best_metrics.signal_strength >= best_metrics.threshold:
+                    # Determine which direction the signal suggests
                     if best_metrics.zscore > 0:
-                        profit = float(bid_primary) - float(ask_secondary)
-                        min_profit = TRADE_SETTINGS['thresholds']['min_profit_after_fees'].get(
-                            symbol, TRADE_SETTINGS['thresholds']['min_profit_after_fees']['default']
-                        )
-                        if profit >= min_profit:
-                            simulator.simulate_arbitrage_trade(
-                                symbol=symbol,
-                                amount=TRADE_AMOUNT,
-                                buy_exchange=secondary_ex,
-                                buy_price=ask_secondary,
-                                sell_exchange=primary_ex,
-                                sell_price=bid_primary,
-                                buy_fee_rate=FEES[secondary_ex]["taker"],
-                                sell_fee_rate=FEES[primary_ex]["taker"]
-                            )
-                            last_trade_time[symbol] = now
+                        buy_ex,  raw_buy_price  = secondary_ex, float(ask_secondary)
+                        sell_ex, raw_sell_price = primary_ex,   float(bid_primary)
                     else:
-                        profit = float(bid_secondary) - float(ask_primary)
-                        min_profit = TRADE_SETTINGS['thresholds']['min_profit_after_fees'].get(
-                            symbol, TRADE_SETTINGS['thresholds']['min_profit_after_fees']['default']
+                        buy_ex,  raw_buy_price  = primary_ex,   float(ask_primary)
+                        sell_ex, raw_sell_price = secondary_ex, float(bid_secondary)
+
+                    buy_fee  = _live_fee_manager.get_fees(buy_ex,  is_maker=False)
+                    sell_fee = _live_fee_manager.get_fees(sell_ex, is_maker=False)
+
+                    # Fee-adjusted prices — only proceed when the spread covers both legs
+                    eff_buy  = raw_buy_price  * (1.0 + buy_fee)
+                    eff_sell = raw_sell_price * (1.0 - sell_fee)
+                    net_profit_per_unit = eff_sell - eff_buy   # positive ⟺ profitable after fees
+
+                    if net_profit_per_unit > 0:
+                        # Size the trade from USDT capital, not a fixed BTC amount
+                        amount = _live_capital_per_leg_usdt / raw_buy_price
+                        simulator.simulate_arbitrage_trade(
+                            symbol=symbol,
+                            amount=amount,
+                            buy_exchange=buy_ex,
+                            buy_price=raw_buy_price,
+                            sell_exchange=sell_ex,
+                            sell_price=raw_sell_price,
+                            buy_fee_rate=buy_fee,
+                            sell_fee_rate=sell_fee,
                         )
-                        if profit >= min_profit:
-                            simulator.simulate_arbitrage_trade(
-                                symbol=symbol,
-                                amount=TRADE_AMOUNT,
-                                buy_exchange=primary_ex,
-                                buy_price=ask_primary,
-                                sell_exchange=secondary_ex,
-                                sell_price=bid_secondary,
-                                buy_fee_rate=FEES[primary_ex]["taker"],
-                                sell_fee_rate=FEES[secondary_ex]["taker"]
-                            )
-                            last_trade_time[symbol] = now
+                        last_trade_time[symbol] = now
         except Exception as e:
             logger.error(f"Error in trading loop: {e}")
         await asyncio.sleep(1)  # Check every second
@@ -323,7 +351,7 @@ async def startup_event():
     # Initialize simulator parameters
     simulator.update_settings(
         z_score_threshold=Z_SCORE_THRESHOLD,
-        trade_amount=TRADE_AMOUNT,
+        trade_amount=0.001,           # simulator default; actual sizing is capital-based at runtime
         exit_z_threshold=EXIT_Z_THRESHOLD
     )
     
@@ -486,10 +514,10 @@ async def get_simulation_status():
         total_fees_paid=simulator.total_fees_paid,
         sharpe_ratio=sharpe_ratio,
         max_drawdown=max_drawdown,
-        # Strategy Parameters from main.py globals
         z_score_threshold=Z_SCORE_THRESHOLD,
-        trade_amount=TRADE_AMOUNT, # This is the global TRADE_AMOUNT
-        exit_z_threshold=EXIT_Z_THRESHOLD
+        capital_per_leg_usdt=_live_capital_per_leg_usdt,
+        exit_z_threshold=EXIT_Z_THRESHOLD,
+        fee_tier=_live_fee_tier,
     )
 
 @app.get("/api/v1/simulation/trades", response_model=RecentTradesResponse)
@@ -548,6 +576,54 @@ async def get_recent_trades(limit: int = 10):
         })
     return RecentTradesResponse(trades=recent_trades)
 
+def _make_config_response() -> StrategyConfigResponse:
+    tier = get_preset(_live_fee_tier)
+    bn_taker  = round(tier.binance_taker * 100, 4)
+    kr_taker  = round(tier.kraken_taker  * 100, 4)
+    combined  = round((tier.binance_taker + tier.kraken_taker) * 100, 4)
+    return StrategyConfigResponse(
+        fee_tier=_live_fee_tier,
+        fee_tier_label=tier.name,
+        capital_per_leg_usdt=_live_capital_per_leg_usdt,
+        binance_taker_pct=bn_taker,
+        kraken_taker_pct=kr_taker,
+        combined_fee_pct=combined,
+        break_even_spread_pct=combined,   # spread must exceed this for profit > 0
+        available_tiers=list_presets(),
+    )
+
+
+@app.get("/api/v1/config", response_model=StrategyConfigResponse)
+async def get_strategy_config():
+    """Return the currently active strategy configuration."""
+    return _make_config_response()
+
+
+@app.post("/api/v1/config", response_model=StrategyConfigResponse)
+async def update_strategy_config(req: StrategyConfigRequest):
+    """Update fee tier and/or capital per leg. Changes take effect on the next trade signal."""
+    global _live_fee_tier, _live_capital_per_leg_usdt, _live_fee_manager
+
+    if req.fee_tier is not None:
+        available = list_presets()
+        if req.fee_tier not in available:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown fee tier '{req.fee_tier}'. Available: {available}",
+            )
+        _live_fee_tier    = req.fee_tier
+        _live_fee_manager = FeeManager(tier_preset=req.fee_tier)
+        logger.info(f"Fee tier updated to: {req.fee_tier}")
+
+    if req.capital_per_leg_usdt is not None:
+        if req.capital_per_leg_usdt <= 0:
+            raise HTTPException(status_code=422, detail="capital_per_leg_usdt must be > 0")
+        _live_capital_per_leg_usdt = req.capital_per_leg_usdt
+        logger.info(f"Capital per leg updated to: {req.capital_per_leg_usdt} USDT")
+
+    return _make_config_response()
+
+
 @app.get("/api/v1/simulation/leaderboard", response_model=LeaderboardResponse)
 async def get_leaderboard():
     """
@@ -566,6 +642,105 @@ async def get_leaderboard():
     ]
     leaderboard.sort(key=lambda x: x.total_pnl, reverse=True)
     return LeaderboardResponse(leaderboard=leaderboard)
+
+class BacktestRequest(BaseModel):
+    fee_tier:     str   = "retail"
+    trade_amount: float = 0.001
+    symbols: List[str]  = ["BTC/USDT", "ETH/USDT"]
+
+
+def _run_backtest_sync(req: BacktestRequest) -> Dict[str, Any]:
+    """Runs the backtester synchronously (called via thread-pool to avoid blocking)."""
+    bt = Backtester(trade_amount=req.trade_amount, fee_tier=req.fee_tier)
+
+    symbol_results = {}
+    all_trades: List[Dict] = []
+    data_sources: Dict[str, str] = {}
+
+    for sym in req.symbols:
+        # Peek at the data to detect source, then let run_backtest load it internally
+        df_peek = bt.load_data(sym)
+        if df_peek is None or df_peek.empty:
+            symbol_results[sym] = {"trades": 0, "pnl": 0.0, "data_source": "none"}
+            continue
+        real_cols = {"binance_bid", "kraken_bid"}
+        data_sources[sym] = "real" if real_cols.issubset(df_peek.columns) else "synthetic"
+        trades_before = len(bt.simulator.trades)
+        bt.run_backtest(sym)
+        trades_this_sym = len(bt.simulator.trades) - trades_before
+        sym_pnl = sum(
+            float(t.get("pnl", 0))
+            for t in bt.simulator.trades[trades_before:]
+        )
+        symbol_results[sym] = {
+            "trades":      trades_this_sym,
+            "pnl":         round(sym_pnl, 8),
+            "data_source": data_sources.get(sym, "synthetic"),
+        }
+
+    if bt.metrics.get("trade_pnls"):
+        bt.calculate_performance_metrics()
+
+    # Build equity curve from cumulative PnLs
+    equity_curve = []
+    running = 0.0
+    for i, p in enumerate(bt.metrics.get("trade_pnls", [])):
+        running += p
+        equity_curve.append({"trade": i + 1, "cumulative_pnl": round(running, 8)})
+
+    # Build trade log from simulator
+    trade_log = []
+    for t in bt.simulator.trades[-50:]:
+        ts = t.get("timestamp")
+        ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        trade_log.append({
+            "timestamp":    ts_str,
+            "symbol":       t.get("symbol", ""),
+            "buy_exchange": t.get("buy_exchange", ""),
+            "sell_exchange":t.get("sell_exchange", ""),
+            "buy_price":    round(float(t.get("buy_price",  0)), 4),
+            "sell_price":   round(float(t.get("sell_price", 0)), 4),
+            "amount":       float(t.get("amount", 0)),
+            "gross_pnl":    round(float(t.get("amount", 0)) * (float(t.get("sell_price", 0)) - float(t.get("buy_price", 0))), 8),
+            "fees":         round(float(t.get("fees", 0)), 8),
+            "net_pnl":      round(float(t.get("pnl",  0)), 8),
+        })
+
+    gross = bt.metrics["total_pnl"]
+    fees  = bt.metrics["total_fees"]
+    return {
+        "fee_tier":      req.fee_tier,
+        "trade_amount":  req.trade_amount,
+        "symbols":       symbol_results,
+        "data_sources":  data_sources,
+        "summary": {
+            "total_trades":  len(bt.simulator.trades),
+            "gross_pnl":     round(gross, 8),
+            "total_fees":    round(fees,  8),
+            "net_pnl":       round(gross - fees, 8),
+            "win_rate":      round(bt.metrics.get("win_rate", 0.0), 4),
+            "sharpe_ratio":  round(bt.metrics.get("sharpe_ratio", 0.0), 4),
+            "max_drawdown":  round(bt.metrics.get("max_drawdown", 0.0), 8),
+        },
+        "equity_curve": equity_curve,
+        "trades":        trade_log,
+    }
+
+
+@app.post("/api/v1/backtest/run")
+async def run_backtest_endpoint(req: BacktestRequest):
+    """Run the offline backtester and return results as JSON."""
+    available_tiers = list_presets()
+    if req.fee_tier not in available_tiers:
+        raise HTTPException(status_code=422, detail=f"Unknown fee tier '{req.fee_tier}'. Available: {available_tiers}")
+    if req.trade_amount <= 0:
+        raise HTTPException(status_code=422, detail="trade_amount must be > 0")
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        result = await loop.run_in_executor(pool, _run_backtest_sync, req)
+    return result
+
 
 # To run the server (save this as main.py in src/crypto_hft_tool/):
 # Ensure your terminal is in the root of your project (crypto_hft_tool folder, not src)

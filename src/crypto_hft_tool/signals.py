@@ -91,18 +91,14 @@ class RollingZScore:
         
     def _update_timeframe(self, timeframe: str, value: float, timestamp: datetime) -> Optional[float]:
         """
-        Update statistics for a specific timeframe and return its Z-score
+        Update statistics for a specific timeframe and return its Z-score.
+        The deque has maxlen=window_size, so old entries are evicted automatically.
+        No timestamp-based pruning is needed (and would be wrong — the deque stores
+        plain floats, not (timestamp, value) tuples).
         """
         window_data = self.data[timeframe]
-        
-        # Remove old values based on timestamp
-        window_size = self.windows[timeframe]
-        cutoff_time = timestamp - timedelta(seconds=window_size)
-        
-        while window_data and window_data[0] < cutoff_time:
-            window_data.popleft()
-            
-        # Add new value
+
+        # Add new value — deque's maxlen handles eviction of stale entries
         window_data.append(value)
         
         if len(window_data) < 2:
