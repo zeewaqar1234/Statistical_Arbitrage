@@ -1,0 +1,47 @@
+PAPER LIVE TRADING PROOF — Phase 5
+============================================================
+
+Generated : 2026-05-31T10:04:16.247277 UTC
+Data source: Real Binance + Kraken APIs (NO real orders placed)
+
+API Connections
+----------------------------------------
+  Binance: ✓ Connected
+  Kraken: ✓ Connected
+
+Run Configuration
+----------------------------------------
+  Fee tier     : Retail (VIP 0 / Kraken Tier 0)
+  Binance taker: 0.1000%
+  Kraken taker : 0.4000%
+  Trade amount : 0.001
+  Duration     : 60s  (30 polls)
+
+Paper Trading Results
+----------------------------------------
+  Opportunities detected : {'ETH/USDT': 8, 'BTC/USDT': 9}
+  Paper trades executed  : 17
+  Total gross PnL        : $0.031260
+  Total fees (simulated) : $3.402715
+  Total net PnL          : $-3.371455
+  Win rate               : 0.00%
+
+Recent Paper Trades (last 10)
+----------------------------------------
+  2026-05-31T10:03:35  ETH/USDT  kraken→binance  z=+1.90  net=$-0.010038
+  2026-05-31T10:03:36  BTC/USDT  binance→kraken  z=-1.19  net=$-0.374370
+  2026-05-31T10:03:37  BTC/USDT  binance→kraken  z=-1.14  net=$-0.373971
+  2026-05-31T10:03:40  BTC/USDT  binance→kraken  z=-1.05  net=$-0.373971
+  2026-05-31T10:03:42  BTC/USDT  binance→kraken  z=-1.01  net=$-0.373772
+  2026-05-31T10:03:50  ETH/USDT  kraken→binance  z=+1.46  net=$-0.010235
+  2026-05-31T10:03:53  ETH/USDT  binance→kraken  z=-2.16  net=$-0.009985
+  2026-05-31T10:03:55  ETH/USDT  binance→kraken  z=-1.76  net=$-0.009985
+  2026-05-31T10:03:58  ETH/USDT  binance→kraken  z=-1.92  net=$-0.009926
+  2026-05-31T10:04:09  BTC/USDT  kraken→binance  z=+1.53  net=$-0.366992
+
+What this proves
+----------------------------------------
+  - Binance and Kraken API connections work with the provided credentials.
+  - Real live prices are fetched and processed by the signal engine.
+  - The fee-tier-aware PnL calculation runs on real market data.
+  - No real orders were submitted at any point.

@@ -45,16 +45,15 @@ class LiveTrader:
         self.exchanges = {}
         self._init_exchange_clients()
         
-        # Initialize signal processors with pre-allocated numpy arrays
+        # Initialize signal processors using the actual EnhancedSignalProcessor signature
         self.signal_processors = {
             sym: EnhancedSignalProcessor(
-                base_windows=ZSCORE_SETTINGS['windows'],
-                momentum_window=ZSCORE_SETTINGS.get('momentum_window', 20),
+                symbol=sym,
+                volatility_window=ZSCORE_SETTINGS.get('vol_window', 30),
                 correlation_window=ZSCORE_SETTINGS.get('correlation_window', 50),
-                vol_window=ZSCORE_SETTINGS.get('vol_window', 30),
-                min_threshold=ZSCORE_SETTINGS['thresholds']['entry']['min'],
-                max_threshold=ZSCORE_SETTINGS['thresholds']['entry']['max'],
-                vol_impact=ZSCORE_SETTINGS.get('vol_impact', 0.3)
+                momentum_window=ZSCORE_SETTINGS.get('momentum_window', 20),
+                signal_threshold=ZSCORE_SETTINGS['thresholds']['entry']['min'],
+                vol_impact=ZSCORE_SETTINGS.get('vol_impact', 0.3),
             ) for sym in SYMBOLS
         }
         

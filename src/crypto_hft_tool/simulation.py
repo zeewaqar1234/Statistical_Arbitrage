@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
 import pandas as pd
-from .config import FEES
+from .config import STRATEGY_DEFAULTS
 
 from .utils.logging_config import get_logger
 
@@ -16,9 +16,9 @@ class TradeSimulator:
         self.total_pnl = 0.0
         self.total_fees_paid = 0.0
         self.positions = {}
-        self.z_score_threshold = 1.2
-        self.trade_amount = 0.001
-        self.exit_z_threshold = 0.3
+        self.z_score_threshold = STRATEGY_DEFAULTS["z_score_entry_threshold"]
+        self.trade_amount       = 0.001   # legacy default; runtime sizing is capital-based
+        self.exit_z_threshold   = STRATEGY_DEFAULTS["z_score_exit_threshold"]
 
     def update_settings(self, z_score_threshold: float, trade_amount: float, exit_z_threshold: float):
         """Update simulator settings."""

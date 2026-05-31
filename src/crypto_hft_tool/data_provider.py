@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 import random
 from datetime import datetime, timezone, timedelta
 
-from .config import data_folder, EXCHANGE_CREDENTIALS, ARBITRAGE_EXCHANGES
+from .config import data_folder, EXCHANGE_CREDENTIALS
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -98,13 +98,9 @@ class SimulatedSingleExchangeDataProvider(BaseDataProvider):
             # Simulate price movement (random walk)
             price_change_factor = 1 + random.uniform(-0.0005, 0.0005) # +/- 0.05%
             current_mid_price = self.last_prices[symbol] * price_change_factor
-            
-            # Introduce a slight, persistent difference for the secondary exchange
-            if exchange_name == ARBITRAGE_EXCHANGES.get("secondary"):
-                current_mid_price *= 1.0002 # Make secondary consistently a bit higher
-            elif exchange_name == ARBITRAGE_EXCHANGES.get("primary"):
-                current_mid_price *= 0.9998 # Make primary consistently a bit lower
-            # Else, for exchanges not in ARBITRAGE_EXCHANGES, no specific adjustment, uses the base random walk.
+            # No artificial exchange offset. Both exchanges share the same random walk baseline,
+            # which is realistic for highly liquid pairs. Real arbitrage opportunities arise from
+            # natural microstructure noise, not a planted offset.
 
             # Simulate a small spread
             spread_percentage = random.uniform(0.0001, 0.0005) # 0.01% to 0.05% spread
@@ -155,13 +151,8 @@ class SimulatedSingleExchangeDataProvider(BaseDataProvider):
             price_change_factor = 1 + random.uniform(-0.0003, 0.0003) # Slightly smaller changes for historical stability
             temp_current_mid_price *= price_change_factor
 
-            # Apply exchange-specific adjustment for historical data as well
-            if exchange_name == ARBITRAGE_EXCHANGES.get("secondary"):
-                adjusted_historical_mid_price = temp_current_mid_price * 1.0002
-            elif exchange_name == ARBITRAGE_EXCHANGES.get("primary"):
-                adjusted_historical_mid_price = temp_current_mid_price * 0.9998
-            else:
-                adjusted_historical_mid_price = temp_current_mid_price
+            # No artificial exchange offset — use raw price for all exchanges.
+            adjusted_historical_mid_price = temp_current_mid_price
 
             spread_percentage = random.uniform(0.0001, 0.0005)
             bid_price = adjusted_historical_mid_price * (1 - spread_percentage / 2)
@@ -196,24 +187,43 @@ class SimulatedSingleExchangeDataProvider(BaseDataProvider):
 
 class CCXTSingleExchangeDataProvider(BaseDataProvider):
     """
-    Provides live market data from a single specified exchange using CCXT.
+    Provides live market data from Binance and Kraken via CCXT public endpoints.
+
+    Uses NO API credentials — fetch_ticker is a public endpoint on both exchanges.
+    This avoids the issue where ccxt sends an invalid key header and Binance
+    rejects even public requests.
     """
     def __init__(self, symbols: List[str]):
         super().__init__(symbols)
         self.ccxt_clients: Dict[str, ccxt.Exchange] = {}
-        # Initialize clients for common exchanges if credentials are provided
-        # This is a basic setup; robust error handling & retries would be needed for production
-        common_params = {"enableRateLimit": True, "options": {"adjustForTimeDifference": True}}
-        if EXCHANGE_CREDENTIALS.get('binance', {}).get('apiKey'):
-            self.ccxt_clients['binance'] = ccxt.binance({**common_params, **EXCHANGE_CREDENTIALS['binance']})
-        else: # Initialize without API key for public endpoints
-            self.ccxt_clients['binance'] = ccxt.binance(common_params)
+        # Public-only clients — no API key sent in headers.
+        public_params = {"enableRateLimit": True, "options": {"defaultType": "spot"}}
+        self.ccxt_clients['binance'] = ccxt.binance(public_params)
+        self.ccxt_clients['kraken']  = ccxt.kraken(public_params)
 
-        if EXCHANGE_CREDENTIALS.get('kraken', {}).get('apiKey'):
-             self.ccxt_clients['kraken'] = ccxt.kraken({**common_params, **EXCHANGE_CREDENTIALS['kraken']})
-        else:
-             self.ccxt_clients['kraken'] = ccxt.kraken(common_params)
-        # Add other exchanges as needed
+    async def start_data_generation(self):
+        """No-op for the CCXT provider — data is fetched on demand."""
+        logger.info("CCXTSingleExchangeDataProvider ready (real market data via public API).")
+
+    async def get_historical_data(self, symbol: str, exchange_name: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
+        """Fetch recent OHLCV bars to pre-seed the signal processor."""
+        client = await self._get_client(exchange_name)
+        if not client:
+            return None
+        try:
+            ohlcv = await client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if not ohlcv:
+                return None
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            df = df.set_index('timestamp')
+            # Approximate bid/ask from close ± half the typical 0.01% spread
+            df['bid'] = df['close'] * 0.9999
+            df['ask'] = df['close'] * 1.0001
+            return df
+        except Exception as e:
+            logger.warning(f"Could not fetch historical OHLCV for {symbol} on {exchange_name}: {e}")
+            return None
 
     async def _get_client(self, exchange_name: str) -> Optional[ccxt.Exchange]:
         exchange_id = exchange_name.lower()

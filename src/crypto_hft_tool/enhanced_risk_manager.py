@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 
+from .config import PORTFOLIO_BASE_VALUE_USD
 from .utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -172,9 +173,7 @@ class EnhancedRiskManager:
             for pos in self.positions.values()
         )
         
-        # Normalize by some base portfolio value
-        base_portfolio_value = 10000  # Adjust based on your setup
-        return total_risk / base_portfolio_value
+        return total_risk / PORTFOLIO_BASE_VALUE_USD
     
     def _calculate_correlation_adjustment(self, symbol: str) -> float:
         """Calculate position size adjustment based on correlations."""

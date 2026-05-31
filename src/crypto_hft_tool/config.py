@@ -19,8 +19,9 @@ SYMBOLS = [
     'ETH/USDT'
 ]
 
-# Data Provider Mode ('simulated' or 'ccxt')
-DATA_PROVIDER_MODE = "simulated"
+# Data Provider Mode: 'ccxt' uses real live prices via public exchange APIs.
+# Switch to 'simulated' if you have no internet access or want a deterministic run.
+DATA_PROVIDER_MODE = "ccxt"
 
 # API Configuration
 API_HOST = "127.0.0.1"
@@ -71,26 +72,22 @@ MONITORING_SETTINGS = {
 EXCHANGE_CREDENTIALS = {
     'binance': {
         'apiKey': os.getenv('BINANCE_API_KEY', ''),
-        'secret': os.getenv('BINANCE_SECRET_KEY', '')
+        'secret': os.getenv('BINANCE_SECRET', os.getenv('BINANCE_SECRET_KEY', '')),
     },
     'kraken': {
         'apiKey': os.getenv('KRAKEN_API_KEY', ''),
-        'secret': os.getenv('KRAKEN_SECRET_KEY', '')
-    }
+        'secret': os.getenv('KRAKEN_SECRET', os.getenv('KRAKEN_SECRET_KEY', '')),
+    },
 }
 
 # ----------------------------------------
 # Trading fees (in decimal form)
-# Adjust these to match real exchange maker/taker rates
+# DEPRECATED: kept for backward compatibility only.
+# New code should use fee_tiers.get_fee_rate() — see fee_tiers.py.
+# Default fallback values = retail VIP 0 taker, no BNB discount.
 FEES = {
-    "binance": {
-        "maker": 0.0002,   # 0.02%
-        "taker": 0.00001,   # Temporarily reduced from 0.04% for simulation
-    },
-    "kraken": {
-        "maker": 0.00016,  # 0.016%
-        "taker": 0.00001,   # Temporarily reduced from 0.026% for simulation
-    },
+    "binance": {"maker": 0.0010, "taker": 0.0010},   # 0.10% / 0.10%
+    "kraken":  {"maker": 0.0025, "taker": 0.0040},   # 0.25% / 0.40%
 }
 # ----------------------------------------
 # Risk management parameters
@@ -136,13 +133,16 @@ TRADE_SETTINGS = {
         }
     },
     'thresholds': {
-        'min_spread_ratio': 0.00005,  # Reduced from 0.0001
-        'max_spread_ratio': 0.005,    # Reduced from 0.01
-        'min_profit_after_fees': {
-            'BTC/USDT': 0.000005,     # Reduced from 0.00001
-            'ETH/USDT': 0.00001,      # Reduced from 0.00002
-            'default': 0.000005
-        }
+        # Fast noise filter: reject spreads that are clearly too small to ever be
+        # profitable (5 bps).  The real profitability check is fee-based (see below).
+        'min_spread_ratio': 0.00005,
+        'max_spread_ratio': 0.005,
+        # Profitability is now checked dynamically:
+        #   effective_sell = bid  * (1 - sell_fee_rate)
+        #   effective_buy  = ask  * (1 + buy_fee_rate)
+        #   execute only when effective_sell > effective_buy  (i.e. profit > 0)
+        # The old static 'min_profit_after_fees' dict has been intentionally removed
+        # because it was near-zero and made the fee check meaningless.
     }
 }
 
@@ -171,6 +171,20 @@ ZSCORE_SETTINGS = {
     },
     'vol_adjustment': True
 }
+
+# Strategy parameters
+STRATEGY_DEFAULTS = {
+    "z_score_window": 60,
+    "z_score_entry_threshold": 1.2,
+    "z_score_exit_threshold": 0.3,
+    # Capital deployed on each exchange leg (USDT).
+    # Trade size (in base asset) = capital_per_leg_usdt / current_ask_price.
+    "capital_per_leg_usdt": 1000.0,
+    "trade_cooldown_sec": 30,
+}
+
+# Portfolio sizing (moved out of enhanced_risk_manager.py)
+PORTFOLIO_BASE_VALUE_USD = 10000.0
 
 # Risk Management Settings
 RISK_SETTINGS = {

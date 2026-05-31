@@ -1,0 +1,26 @@
+BACKTEST SUMMARY — Binance VIP 5 / Kraken Pro Tier 5
+============================================================
+
+Configuration
+  Fee tier          : vip5 (Binance VIP 5 / Kraken Pro Tier 5)
+  Trade size        : 0.001 base-asset units
+  Data directory    : /Users/syedzeewaqarhussain/crypto_hft_tool/data/processed
+
+Headline Numbers
+  Total trades      : 0
+  Gross PnL         : $0.0000
+  Total fees paid   : $0.0000
+  Net PnL           : $0.0000
+  Win rate          : 0.00%
+  Sharpe ratio      : 0.000
+  Max drawdown (USD): $0.0000
+
+Per-symbol breakdown
+  BTC/USDT: 0 trades
+  ETH/USDT: 0 trades
+
+Per-timeframe breakdown
+  window=15: 0 trades, PnL=$0.0000
+  window=60: 0 trades, PnL=$0.0000
+  window=180: 0 trades, PnL=$0.0000
+  window=360: 0 trades, PnL=$0.0000
