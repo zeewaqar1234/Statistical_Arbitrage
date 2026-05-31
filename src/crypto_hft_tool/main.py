@@ -33,6 +33,8 @@ from src.crypto_hft_tool.config import (
 from src.crypto_hft_tool.fee_manager import FeeManager
 from src.crypto_hft_tool.fee_tiers import list_presets, get_preset
 from src.crypto_hft_tool.backtest import Backtester
+from src.crypto_hft_tool.bsdex_strategy import bsdex_strategy
+from src.crypto_hft_tool.config import BSDEX_MARKETS, BSDEX_FEE_PRESETS
 import concurrent.futures
 
 # Configure logging once for the entire application
@@ -375,8 +377,10 @@ async def startup_event():
                     timestamp = row.name  # Index is timestamp
                     enhanced_signal_processors[symbol].update(spread, volume, timestamp)
     
-    # Start background trading loop
+    # Start background trading loop (Binance/Kraken — untouched)
     asyncio.create_task(trading_loop())
+    # Start BSDEX strategy loop — own isolated task, does not touch global state
+    asyncio.create_task(bsdex_strategy.run())
     logger.info("All components initialized successfully.")
 
 @app.get("/")
@@ -739,6 +743,93 @@ async def run_backtest_endpoint(req: BacktestRequest):
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         result = await loop.run_in_executor(pool, _run_backtest_sync, req)
+    return result
+
+
+# =============================================================================
+# BSDEX vs World routes — new namespace, existing routes untouched
+# =============================================================================
+
+class BSDEXFeePresetRequest(BaseModel):
+    preset: str
+
+
+@app.get("/api/v1/bsdex/status")
+async def bsdex_status():
+    """PnL, total trades, win rate, total fees, FX rate, active preset."""
+    return bsdex_strategy.get_status()
+
+
+@app.get("/api/v1/bsdex/trades")
+async def bsdex_trades(limit: int = 50):
+    """Recent simulated BSDEX trades (includes phase, post_auction_convergence, fx_rate)."""
+    return bsdex_strategy.get_recent_trades(limit=min(limit, 500))
+
+
+@app.get("/api/v1/bsdex/market/{market}")
+async def bsdex_market(market: str = Path(..., description="e.g. btc-eur")):
+    """Latest spread, z-score, threshold, signal state, phase, bid/ask for a market."""
+    if market not in BSDEX_MARKETS:
+        raise HTTPException(status_code=404, detail=f"Unknown market '{market}'. Available: {BSDEX_MARKETS}")
+    data = bsdex_strategy.get_latest_market(market)
+    if data is None:
+        return {"market": market, "status": "no_data_yet", "venue_a": bsdex_strategy.venue_a_label}
+    return {"market": market, **data}
+
+
+@app.get("/api/v1/bsdex/spread_series/{market}")
+async def bsdex_spread_series(
+    market: str = Path(..., description="e.g. btc-eur"),
+    n: int = 200,
+):
+    """Recent spread/z-score time series for the chart (up to 500 points)."""
+    if market not in BSDEX_MARKETS:
+        raise HTTPException(status_code=404, detail=f"Unknown market '{market}'. Available: {BSDEX_MARKETS}")
+    return bsdex_strategy.get_spread_series(market, n=min(n, 500))
+
+
+@app.post("/api/v1/bsdex/fee_preset")
+async def bsdex_set_fee_preset(req: BSDEXFeePresetRequest):
+    """Change the active fee preset; recomputes displayed PnL on next tick."""
+    if req.preset not in BSDEX_FEE_PRESETS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown preset '{req.preset}'. Available: {list(BSDEX_FEE_PRESETS.keys())}"
+        )
+    ok = bsdex_strategy.set_fee_preset(req.preset)
+    return {"success": ok, "active_preset": bsdex_strategy._preset_name}
+
+
+@app.get("/api/v1/bsdex/phase/{market}")
+async def bsdex_phase(market: str = Path(..., description="e.g. btc-eur")):
+    """Current phase + last auction-transition timestamp for chart markers."""
+    if market not in BSDEX_MARKETS:
+        raise HTTPException(status_code=404, detail=f"Unknown market '{market}'. Available: {BSDEX_MARKETS}")
+    phase = bsdex_strategy.get_phase(market)
+    return {"market": market, **phase}
+
+
+@app.get("/api/v1/bsdex/fee_presets")
+async def bsdex_list_fee_presets():
+    """List all available BSDEX fee presets with their rates."""
+    from src.crypto_hft_tool.config import BSDEX_STRATEGY_FEES
+    result = {}
+    for preset_name, preset in BSDEX_FEE_PRESETS.items():
+        bsdex_key = preset["bsdex"]
+        world_key = preset["world"]
+        bsdex_fees = BSDEX_STRATEGY_FEES[bsdex_key]
+        world_fees = BSDEX_STRATEGY_FEES[world_key]
+        combined_taker = bsdex_fees["taker"] + world_fees["taker"]
+        result[preset_name] = {
+            "bsdex_fee_key": bsdex_key,
+            "world_fee_key": world_key,
+            "bsdex_taker_pct": round(bsdex_fees["taker"] * 100, 4),
+            "world_taker_pct": round(world_fees["taker"] * 100, 4),
+            "combined_taker_pct": round(combined_taker * 100, 4),
+            "breakeven_spread_pct": round(combined_taker * 100, 4),
+            "is_institutional_assumption": "institutional" in bsdex_key,
+            "active": preset_name == bsdex_strategy._preset_name,
+        }
     return result
 
 

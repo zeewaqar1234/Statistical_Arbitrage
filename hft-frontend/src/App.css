@@ -846,3 +846,64 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   BSDEX vs World tab — shares Live Monitor CSS classes.
+   Only BSDEX-specific overrides are here.
+   ============================================================ */
+
+.tab-btn-bsdex { font-style: italic; }
+.tab-btn-bsdex.active { border-bottom-color: #495057; background: #f8f9fa; }
+
+/* Highlight row for post-auction convergence trades */
+.highlight-row { background: #f0f7ff; }
+.highlight-row .signal-buy { font-weight: 700; }
+
+/* Phase badge (used in section header inline) */
+.bsdex-phase-badge {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin: 8px 0 4px;
+  border: 2px solid;
+}
+.phase-continuous {
+  background: #e6f4ea;
+  color: #198754;
+  border-color: #198754;
+}
+.phase-auction {
+  background: #fff3cd;
+  color: #856404;
+  border-color: #ffc107;
+}
+.phase-halt {
+  background: #f8d7da;
+  color: #842029;
+  border-color: #dc3545;
+}
+.bsdex-phase-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Signal state colours (used by stat-value and txn-val) */
+.signal-state-signal { color: #198754; font-weight: 700; }
+.signal-state-hold   { color: var(--text-secondary); }
+.signal-state-arming { color: #856404; font-weight: 600; }
+.signal-state-blocked_by_phase { color: #842029; }
+
+/* Honesty footer (compact, inside stats card) */
+.bsdex-honesty-footer {
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: #6c757d;
+  line-height: 1.6;
+}
