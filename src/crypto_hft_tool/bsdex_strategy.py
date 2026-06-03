@@ -47,6 +47,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
+from decimal import Decimal
 from email.utils import formatdate
 from typing import Dict, List, Optional, Tuple
 
@@ -340,6 +341,192 @@ async def _fetch_binance_quote_eur(symbol: str, fx_eur_per_usd: float) -> Option
 
 
 # ---------------------------------------------------------------------------
+# FX staleness guard
+# ---------------------------------------------------------------------------
+MAX_FX_AGE_SEC = 300          # 5 minutes; beyond this, FX is too stale to trade
+FX_WARN_AGE_SEC = 120         # log a warning after 2 minutes of staleness
+
+# ---------------------------------------------------------------------------
+# Bitstamp order-book REST (cached; for VWAP price-impact estimation)
+# ---------------------------------------------------------------------------
+
+class BitstampOrderbookCache:
+    """
+    Caches Bitstamp's full bid/ask depth (top-20) with a short TTL.
+    Used by _estimate_price_impact to compute VWAP clearing prices.
+    REST is fine here: order-book depth changes slowly vs. top-of-book.
+    """
+    _TTL_SEC = 5.0
+
+    def __init__(self):
+        self._books: Dict[str, dict] = {}       # ticker → {"bids":..., "asks":..., "ts":...}
+
+    async def get(self, ticker: str) -> Optional[Dict]:
+        """Return cached book or re-fetch if stale."""
+        cached = self._books.get(ticker)
+        if cached and (time.time() - cached["ts"]) < self._TTL_SEC:
+            return cached["book"]
+        url = f"{BITSTAMP_REST_BASE}/order_book/{ticker}/?group=1"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    d = await resp.json()
+                    # Bitstamp returns lists of ["price", "amount", count]
+                    book = {
+                        "bids": {Decimal(row[0]): Decimal(row[1]) for row in d.get("bids", [])[:20]},
+                        "asks": {Decimal(row[0]): Decimal(row[1]) for row in d.get("asks", [])[:20]},
+                    }
+                    self._books[ticker] = {"book": book, "ts": time.time()}
+                    return book
+        except Exception as exc:
+            logger.debug(f"[BitstampOB] {ticker} fetch error: {exc}")
+            return cached["book"] if cached else None
+
+# Module-level singleton (shared across all BSDEXStrategy instances)
+_bitstamp_ob_cache = BitstampOrderbookCache()
+
+
+# ---------------------------------------------------------------------------
+# Binance WebSocket depth-20 cache — replaces per-tick REST calls
+# ---------------------------------------------------------------------------
+
+class BinanceDepthCache:
+    """
+    Subscribes to Binance combined depth-20 stream (100 ms snapshots).
+    Provides:
+      • get_quote(symbol)     → {bid, ask, mid_price} for top-of-book (replaces REST)
+      • get_orderbook(symbol) → {bids: {Decimal: Decimal}, asks: ...} for VWAP
+
+    Using depth20@100ms (snapshot mode) avoids delta-management complexity:
+    every message is a complete top-20 book, no sequence-number reconciliation needed.
+    """
+    _BINANCE_WS = "wss://stream.binance.com:9443/stream"
+
+    def __init__(self, symbols: List[str]):
+        # symbols in Binance format: ["BTCUSDT", "ETHUSDT"]
+        self._symbols    = [s.upper() for s in symbols]
+        self._quotes:    Dict[str, dict]              = {}
+        self._orderbooks: Dict[str, Dict[str, Dict]]  = {}
+        self._running    = False
+        self._connected  = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def get_quote(self, symbol: str) -> Optional[dict]:
+        """Best bid/ask from the depth cache. Returns None until first WS message."""
+        return self._quotes.get(symbol.upper())
+
+    def get_orderbook(self, symbol: str) -> Optional[Dict]:
+        """Full top-20 order book in {Decimal: Decimal} format."""
+        return self._orderbooks.get(symbol.upper())
+
+    def _process_depth(self, data: dict):
+        """Parse a depth20 snapshot message and update caches."""
+        sym = data.get("s", "").upper()
+        if not sym:
+            return
+        raw_bids = data.get("bids", [])
+        raw_asks = data.get("asks", [])
+        if not raw_bids or not raw_asks:
+            return
+
+        bids = {Decimal(p): Decimal(a) for p, a in raw_bids}
+        asks = {Decimal(p): Decimal(a) for p, a in raw_asks}
+
+        best_bid = float(max(bids.keys()))
+        best_ask = float(min(asks.keys()))
+        self._quotes[sym]     = {
+            "bid":       best_bid,
+            "ask":       best_ask,
+            "mid_price": (best_bid + best_ask) / 2.0,
+            "ts":        time.time(),
+            "source":    "binance_ws_depth",
+        }
+        self._orderbooks[sym] = {"bids": bids, "asks": asks}
+
+    async def run(self):
+        """
+        Connect to the combined depth20@100ms stream for all tracked symbols.
+        Reconnects automatically on disconnect — no manual intervention needed.
+        """
+        import websockets
+
+        stream_names = "/".join(f"{s.lower()}@depth20@100ms" for s in self._symbols)
+        url = f"{self._BINANCE_WS}?streams={stream_names}"
+        self._running = True
+
+        while self._running:
+            try:
+                async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+                    self._connected = True
+                    logger.info(f"[BinanceDepthWS] Connected → {self._symbols}")
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        try:
+                            outer = json.loads(raw)
+                            # Combined stream wraps payload: {"stream":"...","data":{...}}
+                            data = outer.get("data", outer)
+                            self._process_depth(data)
+                        except Exception as exc:
+                            logger.debug(f"[BinanceDepthWS] Parse error: {exc}")
+            except Exception as exc:
+                self._connected = False
+                if self._running:
+                    logger.warning(
+                        f"[BinanceDepthWS] Connection lost ({type(exc).__name__}: {exc}); "
+                        "reconnecting in 3 s"
+                    )
+                    await asyncio.sleep(3)
+
+    def stop(self):
+        self._running    = False
+        self._connected  = False
+
+
+# ---------------------------------------------------------------------------
+# Lightweight VWAP helper (mirrors ExecutionManager._estimate_price_impact)
+# ---------------------------------------------------------------------------
+
+def _vwap_clearing_price(
+    orderbook: Dict[str, Dict[Decimal, Decimal]],
+    side: str,
+    amount_base: float,
+) -> Optional[float]:
+    """
+    Walk the order book to find the volume-weighted average clearing price
+    for a market order of `amount_base` units.
+
+    side = 'buy'  → walk asks (ascending)
+    side = 'sell' → walk bids (descending)
+
+    Returns None if the book lacks sufficient depth.
+    """
+    if not orderbook:
+        return None
+    try:
+        book_side = orderbook["bids"] if side == "sell" else orderbook["asks"]
+        prices = sorted(book_side.keys(), reverse=(side == "sell"))
+        remaining   = amount_base
+        total_cost  = 0.0
+        for price in prices:
+            available = float(book_side[price])
+            taken     = min(remaining, available)
+            total_cost += taken * float(price)
+            remaining  -= taken
+            if remaining <= 0:
+                break
+        if remaining > 1e-10:   # insufficient depth
+            return None
+        return total_cost / amount_base
+    except Exception as exc:
+        logger.debug(f"[VWAP] Error: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # BSDEXStrategy — the self-contained strategy class
 # ---------------------------------------------------------------------------
 
@@ -397,6 +584,14 @@ class BSDEXStrategy:
 
         # --- FX rate cache ----------------------------------------------------
         self.fx_cache = FXRateCache()
+
+        # --- Binance WebSocket depth cache (eliminates per-tick REST calls) --
+        # Maps BSDEX market names to Binance symbols (e.g. "btc-eur" → "BTCUSDT")
+        _binance_symbols = list({v.replace("/", "") for v in BSDEX_MARKET_MAP.values()})
+        self._binance_ws = BinanceDepthCache(_binance_symbols)
+
+        # --- Bitstamp order book cache (VWAP for venue A) --------------------
+        self._bitstamp_ob = _bitstamp_ob_cache
 
         # --- BSDEX WS provider (created only if API keys are present) --------
         self._bsdex_ws: Optional[BSDEXWebSocketProvider] = None
@@ -508,27 +703,91 @@ class BSDEXStrategy:
     # ------------------------------------------------------------------
 
     async def _process_market(self, market: str):
-        """One tick: fetch prices, compute spread, signal, maybe simulate a trade."""
-        fx_rate = await self.fx_cache.maybe_refresh()
+        """
+        One evaluation tick.
 
-        world_symbol = BSDEX_MARKET_MAP[market]
+        Price sources (in priority order):
+          Venue B (Binance world-leg):
+            1. BinanceDepthCache WS — real-time depth20 snapshot, zero REST overhead
+            2. Bitstamp REST bookTicker — fallback for the first few seconds before WS connects
+          Venue A (BSDEX / Bitstamp proxy):
+            - BSDEXWebSocketProvider when API keys are present
+            - BitstampOrderbookCache (5s REST TTL) for VWAP; direct REST for top-of-book
+
+        FX: ECB rate via Frankfurter. Trades are gated if rate is older than MAX_FX_AGE_SEC.
+        Spread: VWAP clearing price when order-book depth is available; top-of-book otherwise.
+        """
+        # ── 1. FX rate (refresh if stale) ─────────────────────────────────────
+        fx_rate  = await self.fx_cache.maybe_refresh()
+        fx_age   = self.fx_cache.age_sec
+
+        if fx_age > FX_WARN_AGE_SEC:
+            logger.warning(
+                f"[FX] Rate is {fx_age:.0f}s old (limit={MAX_FX_AGE_SEC}s). "
+                "Intraday EUR/USD drift may invalidate spread readings."
+            )
+
+        world_symbol = BSDEX_MARKET_MAP[market]   # e.g. "BTC/USDT"
+        bn_sym       = world_symbol.replace("/", "")   # "BTCUSDT"
+
+        # ── 2. Venue B (Binance world-leg) — prefer WS, fallback REST ─────────
+        ws_quote_b = self._binance_ws.get_quote(bn_sym)
+        if ws_quote_b:
+            # BinanceDepthCache stores native USDT prices from depth20 snapshots.
+            # Apply the FX rate here to convert to EUR.
+            venue_b_q = {
+                "bid":       ws_quote_b["bid"] * fx_rate,
+                "ask":       ws_quote_b["ask"] * fx_rate,
+                "mid_price": ws_quote_b["mid_price"] * fx_rate,
+                "source":    "binance_ws_depth",
+                "fx_rate":   fx_rate,
+            }
+        else:
+            # WS not yet connected (first ~1 s after startup) — fall back to REST
+            venue_b_q = await _fetch_binance_quote_eur(world_symbol, fx_rate)
+
+        # ── 3. Venue A (BSDEX proxy / Bitstamp) ──────────────────────────────
         venue_a_q = await self._get_venue_a_quote(market)
-        venue_b_q = await _fetch_binance_quote_eur(world_symbol, fx_rate)
 
         if not venue_a_q or not venue_b_q:
             return
 
-        a_bid = venue_a_q["bid"]
-        a_ask = venue_a_q["ask"]
-        b_bid = venue_b_q["bid"]
-        b_ask = venue_b_q["ask"]
+        a_mid = venue_a_q["mid_price"]
+        b_mid = venue_b_q["mid_price"]
 
-        # Spread: Venue A bid − Venue B ask.  Positive → A expensive (sell A, buy B).
-        spread_eur = a_bid - b_ask
-        mid_b      = venue_b_q["mid_price"]
-        spread_pct = (spread_eur / mid_b * 100) if mid_b > 0 else 0.0
+        # ── 4. VWAP clearing prices (replaces top-of-book illusion) ─────────
+        #   amount_base: how many BTC/ETH units €capital buys at mid
+        amount_base = (self._capital_eur / a_mid) if a_mid > 0 else 0.0
 
-        # Signal engine
+        # Venue A VWAP — Bitstamp order book (5 s REST cache)
+        bs_ticker   = BSDEX_BITSTAMP_MAP.get(market)
+        book_a      = await self._bitstamp_ob.get(bs_ticker) if bs_ticker else None
+
+        # Venue B VWAP — Binance WS depth cache
+        book_b = self._binance_ws.get_orderbook(bn_sym)
+        # Convert Binance book prices from USDT → EUR
+        if book_b and fx_rate:
+            book_b = {
+                "bids": {p * Decimal(str(fx_rate)): q for p, q in book_b["bids"].items()},
+                "asks": {p * Decimal(str(fx_rate)): q for p, q in book_b["asks"].items()},
+            }
+
+        # Compute VWAP prices (fall back to top-of-book if depth unavailable)
+        vwap_a_bid = _vwap_clearing_price(book_a, "sell", amount_base) if book_a and amount_base > 0 else None
+        vwap_b_ask = _vwap_clearing_price(book_b, "buy",  amount_base) if book_b and amount_base > 0 else None
+
+        a_bid_eff = vwap_a_bid if vwap_a_bid else venue_a_q["bid"]
+        b_ask_eff = vwap_b_ask if vwap_b_ask else venue_b_q["ask"]
+        a_ask_eff = venue_a_q["ask"]   # buying on A uses ask
+        b_bid_eff = venue_b_q["bid"]   # selling on B uses bid
+
+        price_model = "vwap" if (vwap_a_bid and vwap_b_ask) else "top_of_book"
+
+        # ── 5. Spread on VWAP-adjusted prices ────────────────────────────────
+        spread_eur = a_bid_eff - b_ask_eff          # Positive → A expensive
+        spread_pct = (spread_eur / b_mid * 100) if b_mid > 0 else 0.0
+
+        # ── 6. Signal engine ──────────────────────────────────────────────────
         volume     = venue_a_q.get("baseVolume", 0)
         now_ts     = datetime.now(timezone.utc)
         signal_map = self.signal_processors[market].update(spread_eur, volume, now_ts)
@@ -540,12 +799,8 @@ class BSDEXStrategy:
                 z_score   = metrics.zscore
                 threshold = metrics.threshold
 
-        # Signal state — raw z-score vs adaptive threshold.
-        # Note: the BSDEX strategy uses raw z-score (not volume-weighted) because
-        # Bitstamp REST volumes are polled infrequently and are not tick-level.
-        # The backtest also uses a simple rolling z-score with no volume weighting,
-        # so the two modes are consistent in their signal definition.
-        # Current fees — must be defined before signal gating logic uses be_pct
+        # ── 7. Gate logic ─────────────────────────────────────────────────────
+        # Fees defined first (be_pct used below)
         fee_a  = self._venue_a_taker
         fee_b  = self._venue_b_taker
         be_pct = self.breakeven_spread_pct   # (fee_a + fee_b) × 100
@@ -553,28 +808,34 @@ class BSDEXStrategy:
         z_triggered  = (z_score is not None and threshold is not None and abs(z_score) >= threshold)
         spread_ok    = abs(spread_pct) > be_pct
         cooldown_ok  = (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
+        # FX staleness gate: if ECB rate is > MAX_FX_AGE_SEC old, the EUR/USD basis
+        # risk may eclipse the spread signal — block trades but continue monitoring.
+        fx_ok        = fx_age <= MAX_FX_AGE_SEC
 
-        if z_triggered and spread_ok and cooldown_ok:
+        if z_triggered and spread_ok and cooldown_ok and fx_ok:
             signal_state = "SIGNAL"
+        elif z_triggered and not fx_ok:
+            signal_state = "SIGNAL_GATED"   # FX rate too stale
         elif z_triggered and not spread_ok:
-            # z-score threshold crossed but spread doesn't cover fees — do NOT trade
-            signal_state = "SIGNAL_GATED"   # visible to UI: signal active, spread too thin
+            signal_state = "SIGNAL_GATED"   # spread doesn't cover fees
         elif z_triggered and not cooldown_ok:
             signal_state = "SIGNAL_COOLDOWN"
         else:
             signal_state = "HOLD"
 
-        # Trade conditions
         should_trade = signal_state == "SIGNAL"
 
+        # ── 8. Simulated trade execution (VWAP prices used as clearing prices) ─
         trade_data = None
         if should_trade:
             if spread_eur > 0:
-                buy_price, sell_price = b_ask, a_bid
+                # Venue A expensive → SELL A (use VWAP bid on A), BUY B (use VWAP ask on B)
+                buy_price, sell_price = b_ask_eff, a_bid_eff
                 buy_ex,    sell_ex    = "world_lmax", "bitstamp"
                 buy_fee,   sell_fee   = fee_b, fee_a
             else:
-                buy_price, sell_price = a_ask, b_bid
+                # Venue B expensive → BUY A (use VWAP ask on A), SELL B (use VWAP bid on B)
+                buy_price, sell_price = a_ask_eff, b_bid_eff
                 buy_ex,    sell_ex    = "bitstamp", "world_lmax"
                 buy_fee,   sell_fee   = fee_a, fee_b
 
@@ -604,38 +865,43 @@ class BSDEXStrategy:
                         "sell_exchange": sell_ex,
                         "buy_price": buy_price,
                         "sell_price": sell_price,
+                        "price_model": price_model,
                     }
                     logger.info(
                         f"[BSDEX] Trade {market}: {amount:.6f} BUY@{buy_price:.2f} ({buy_ex}), "
                         f"SELL@{sell_price:.2f} ({sell_ex}), PnL=€{pnl:.4f} | "
-                        f"tier={self._tier_label} feeA={fee_a:.4%} feeB={fee_b:.4%}"
+                        f"tier={self._tier_label} feeA={fee_a:.4%} feeB={fee_b:.4%} "
+                        f"model={price_model} ws={'✓' if self._binance_ws.connected else '✗'}"
                     )
 
-        # Rolling spread buffer
+        # ── 9. Rolling spread buffer ──────────────────────────────────────────
         tick = {
-            "ts":          now_ts.isoformat(),
-            "spread_eur":  round(spread_eur, 4),
-            "spread_pct":  round(spread_pct, 6),
-            "z_score":     round(z_score, 4)   if z_score   is not None else None,
-            "threshold":   round(threshold, 4) if threshold is not None else None,
+            "ts":           now_ts.isoformat(),
+            "spread_eur":   round(spread_eur, 4),
+            "spread_pct":   round(spread_pct, 6),
+            "z_score":      round(z_score, 4)   if z_score   is not None else None,
+            "threshold":    round(threshold, 4) if threshold is not None else None,
             "signal_state": signal_state,
-            "a_bid":       round(a_bid, 4),
-            "a_ask":       round(a_ask, 4),
-            "b_bid":       round(b_bid, 4),
-            "b_ask":       round(b_ask, 4),
-            "fx_rate":     round(fx_rate, 6),
-            "trade":       trade_data,
+            "a_bid":        round(a_bid_eff, 4),
+            "a_ask":        round(a_ask_eff, 4),
+            "b_bid":        round(b_bid_eff, 4),
+            "b_ask":        round(b_ask_eff, 4),
+            "fx_rate":      round(fx_rate, 6),
+            "fx_age_sec":   round(fx_age, 1),
+            "price_model":  price_model,
+            "binance_ws":   self._binance_ws.connected,
+            "trade":        trade_data,
         }
         self._spread_buf[market].append(tick)
 
         self.latest[market] = {
             **tick,
-            "venue_a_source":      venue_a_q.get("source", self.data_source),
-            "venue_b_source":      venue_b_q.get("source", "binance_usdt_eur"),
+            "venue_a_source":       venue_a_q.get("source", self.data_source),
+            "venue_b_source":       venue_b_q.get("source", "binance_ws_depth"),
             "breakeven_spread_pct": round(be_pct, 6),
-            "venue_a_taker_pct":   round(fee_a * 100, 4),
-            "venue_b_taker_pct":   round(fee_b * 100, 4),
-            "tier_label":          self._tier_label,
+            "venue_a_taker_pct":    round(fee_a * 100, 4),
+            "venue_b_taker_pct":    round(fee_b * 100, 4),
+            "tier_label":           self._tier_label,
         }
 
     # ------------------------------------------------------------------
@@ -643,13 +909,18 @@ class BSDEXStrategy:
     # ------------------------------------------------------------------
 
     async def run(self):
-        """Start the BSDEX strategy loop (and WS provider if authenticated)."""
+        """Start the BSDEX strategy loop (and WS providers)."""
         self._running = True
+
+        # Launch Binance depth WebSocket (eliminates REST calls for world-leg prices)
+        asyncio.create_task(self._binance_ws.run())
 
         # Launch BSDEX WS listener if authenticated
         if self._use_real_bsdex and self._bsdex_ws:
             asyncio.create_task(self._bsdex_ws.run())
             await asyncio.sleep(2)  # allow WS to connect + receive first quotes
+        else:
+            await asyncio.sleep(1)  # give Binance WS a moment to connect
 
         while self._running:
             for market in BSDEX_MARKETS:
@@ -661,6 +932,7 @@ class BSDEXStrategy:
 
     def stop(self):
         self._running = False
+        self._binance_ws.stop()
         if self._bsdex_ws:
             self._bsdex_ws.stop()
 
