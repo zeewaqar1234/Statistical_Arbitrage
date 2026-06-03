@@ -949,3 +949,74 @@
   color: #6c757d;
   line-height: 1.6;
 }
+
+/* ── Methodology disclosure panel ────────────────────────────────── */
+.methodology-disclosure {
+  background: #F8F9FA;
+  border: 1px solid #DEE2E6;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  color: #495057;
+}
+.methodology-disclosure summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  color: #6C757D;
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+.methodology-disclosure summary:hover { color: #343A40; }
+.methodology-body {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+.methodology-col h4 {
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  color: #343A40;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.methodology-col p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6C757D;
+}
+
+/* ── Microstructure parameter table ─────────────────────────────── */
+.param-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.param-table th {
+  background: #F1F3F5;
+  color: #495057;
+  font-weight: 700;
+  padding: 7px 12px;
+  text-align: left;
+  border-bottom: 2px solid #DEE2E6;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.param-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #F1F3F5;
+  color: #343A40;
+  vertical-align: top;
+}
+.param-table tr:last-child td { border-bottom: none; }
+.param-table tr:hover td { background: #F8F9FA; }
+.param-table td:first-child { font-weight: 600; color: #495057; white-space: nowrap; }
+.param-table td:nth-child(3) { color: #6C757D; font-size: 11.5px; }
+
+/* ── BSDEX new signal states ─────────────────────────────────────── */
+.signal-state-signal_gated  { color: #856404; }
+.signal-state-signal_cooldown { color: #6C757D; }

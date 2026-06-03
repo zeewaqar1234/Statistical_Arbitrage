@@ -287,22 +287,22 @@ async def run_historical_backtest(
                 direction             = "BUY Bitstamp / SELL Binance→EUR"
                 buy_ex, sell_ex       = "Bitstamp", "Binance→EUR"
 
-            # P&L (exact, no approximation)
-            # amount = capital_eur / buy_price   (units of base asset)
-            # cost     = amount × buy_price  × (1 + fee_buy)  = capital_eur × (1 + fee_buy)
-            # revenue  = amount × sell_price × (1 − fee_sell)
+            # P&L — three components that always satisfy: gross − fees = net
+            #
+            # amount   = capital_eur / buy_price          (base-asset units)
+            # gross    = amount × (sell_price − buy_price) ← true price gain, BEFORE any fees
+            # fees_eur = capital_eur × fee_buy  +  amount × sell_price × fee_sell
+            # pnl      = gross − fees_eur
+            #          = amount × sell_price × (1 − fee_sell) − capital_eur × (1 + fee_buy)
+            #          → this is exact; no approximation.
             amount   = capital_eur / buy_price
-            cost     = capital_eur * (1.0 + fee_buy)
-            revenue  = amount * sell_price * (1.0 - fee_sell)
-            pnl      = revenue - cost
+            gross    = amount * (sell_price - buy_price)            # true price gain, no fees deducted
+            fees_eur = capital_eur * fee_buy + amount * sell_price * fee_sell
+            pnl      = gross - fees_eur                             # always equals gross − fees
 
             if pnl <= 0:
-                # eff_sell < eff_buy despite passing the spread gate — skip
-                # (can happen when prices crossed between gate check and execution)
+                # Net non-positive after fees — spread gate borderline, skip
                 continue
-
-            fees_eur = capital_eur * fee_buy + amount * sell_price * fee_sell
-            gross    = revenue - capital_eur   # price gain before fees
 
             cumulative_pnl += pnl
             last_trade_ts   = ts
@@ -330,9 +330,9 @@ async def run_historical_backtest(
     # ---- aggregate stats ---------------------------------------------------
     n          = len(trades)
     wins       = sum(1 for t in trades if t["pnl_eur"] > 0)
-    total_pnl  = sum(t["pnl_eur"]  for t in trades)
-    total_fees = sum(t["fees_eur"] for t in trades)
-    gross_pnl  = sum(t["gross_eur"] for t in trades)
+    gross_pnl  = sum(t["gross_eur"] for t in trades)   # true price gain before fees
+    total_fees = sum(t["fees_eur"]  for t in trades)
+    total_pnl  = gross_pnl - total_fees                 # always exact: gross − fees = net
 
     # Max drawdown (in EUR)
     max_dd = 0.0

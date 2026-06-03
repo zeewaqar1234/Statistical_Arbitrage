@@ -239,21 +239,11 @@ function BsdexSpreadTooltip({ active, payload, label }) {
 }
 
 function AppContent() {
-  const [selectedSymbol, setSelectedSymbol] = useState(SYMBOLS[0]);
   const [isRunning, setIsRunning] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [history, setHistory] = useState([]);
-  const [priceTrend, setPriceTrend] = useState({ binance: '', kraken: '' });
-  const prevPricesRef = useRef({ binance: null, kraken: null });
 
   // Tab navigation
-  const [activeTab, setActiveTab] = useState('live');
-
-  // Strategy configuration state
-  const [configDraft, setConfigDraft] = useState({ feeTier: 'retail', capitalPerLeg: '1000' });
-  const [configApplied, setConfigApplied] = useState(null);
-  const [configSaving, setConfigSaving] = useState(false);
-  const [configError, setConfigError] = useState(null);
+  const [activeTab, setActiveTab] = useState('bsdex');
 
   // Backtesting state
   // BSDEX Historical Backtest state
@@ -281,38 +271,8 @@ function AppContent() {
   const bsdexPrevPricesRef = useRef({ venueA: null, venueB: null });
   const [bsdexPriceTrend, setBsdexPriceTrend]   = useState({ venueA: '', venueB: '' });
 
-  const pollInterval = isRunning ? REFRESH_INTERVAL : false;
-
-  const { data: marketData, error: marketDataError, isLoading: marketDataLoading, isFetching } = useQuery(
-    ['marketData', selectedSymbol],
-    () => api.getMarketData(selectedSymbol),
-    { refetchInterval: pollInterval, retry: 1 }
-  );
-
-  const { data: simulationStatus, isLoading: simStatusLoading } = useQuery(
-    'simulationStatus',
-    api.getSimulationStatus,
-    { refetchInterval: pollInterval, retry: 1 }
-  );
-
-  const { data: recentTrades, isLoading: tradesLoading } = useQuery(
-    'recentTrades',
-    () => api.getRecentTrades(MAX_ACTIVITY_ROWS),
-    { refetchInterval: pollInterval, retry: 1 }
-  );
-
-  useQuery('liveConfig', api.getConfig, {
-    refetchInterval: 10000, retry: 1,
-    onSuccess: (d) => {
-      if (d && !configApplied) {
-        setConfigDraft({ feeTier: d.fee_tier, capitalPerLeg: String(d.capital_per_leg_usdt) });
-        setConfigApplied(d);
-      }
-    },
-  });
-
-  // BSDEX queries — only active when the BSDEX tab is open
-  const bsdexPollInterval = (activeTab === 'bsdex' && isRunning) ? REFRESH_INTERVAL : false;
+  // BSDEX queries — active when BSDEX tab or backtest tab is open
+  const bsdexPollInterval = (isRunning && activeTab === 'bsdex') ? REFRESH_INTERVAL : false;
   const { data: bsdexStatus } = useQuery('bsdexStatus', api.bsdexStatus, { refetchInterval: bsdexPollInterval, retry: 1 });
   const { data: bsdexTrades = [] } = useQuery('bsdexTrades', () => api.bsdexTrades(30), { refetchInterval: bsdexPollInterval, retry: 1 });
   const { data: bsdexMarketData } = useQuery(['bsdexMarket', bsdexMarket], () => api.bsdexMarket(bsdexMarket), { refetchInterval: bsdexPollInterval, retry: 1 });
@@ -397,6 +357,8 @@ function AppContent() {
   const bsdexSpreadPct       = bsdexMarketData?.spread_pct ?? null;
   const bsdexSignalState     = bsdexMarketData?.signal_state ?? 'HOLD';
   const bsdexSignalTriggered = bsdexSignalState === 'SIGNAL';
+  const bsdexSignalGated     = bsdexSignalState === 'SIGNAL_GATED';
+  const bsdexSignalCooldown  = bsdexSignalState === 'SIGNAL_COOLDOWN';
   const bsdexBase            = bsdexMarket.split('-')[0].toUpperCase();
 
   // Price trend for Venue A / B (same pattern as Binance/Kraken)
@@ -507,122 +469,16 @@ function AppContent() {
     });
   }, [hbtResult, hbtSymbol, hbtStartDt]);
 
-  const handleApplyConfig = useCallback(async () => {
-    setConfigSaving(true);
-    setConfigError(null);
-    try {
-      const result = await api.updateConfig({
-        fee_tier:             configDraft.feeTier,
-        capital_per_leg_usdt: parseFloat(configDraft.capitalPerLeg),
-      });
-      setConfigApplied(result);
-      queryClient.invalidateQueries('liveConfig');
-      queryClient.invalidateQueries('simulationStatus');
-    } catch (err) {
-      setConfigError(err?.response?.data?.detail ?? 'Failed to apply config');
-    } finally {
-      setConfigSaving(false);
-    }
-  }, [configDraft]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (!marketData) return;
-    const threshold = marketData.adaptive_threshold ?? 1;
-    const b = marketData.binance_price ?? marketData.mid_price ?? null;
-    const k = marketData.kraken_price ?? null;
 
-    const rawSpread    = marketData.spread ?? (b != null && k != null ? b - k : null);
-    const rawSpreadPct = marketData.spread_pct ?? (rawSpread != null && k ? (rawSpread / k) * 100 : null);
-    setHistory((prev) => [
-      ...prev,
-      {
-        time:          formatChartTime(marketData.timestamp),
-        binance:       b ?? 0,
-        kraken:        k ?? 0,
-        spreadPct:     rawSpreadPct != null ? Number(rawSpreadPct.toFixed(4)) : 0,
-        spreadAbs:     rawSpread    != null ? Number(rawSpread.toFixed(4))    : 0,
-        signalStrength: marketData.signal_strength ?? 0,
-        threshold,
-      },
-    ].slice(-MAX_HISTORY_POINTS));
+  // isConnected: derive from BSDEX market data since we only have the BSDEX tab now
+  const isConnected = isRunning && !!bsdexMarketData;
 
-    const prev = prevPricesRef.current;
-    if (prev.binance != null && prev.kraken != null && b != null && k != null) {
-      const bDelta = b - prev.binance;
-      const kDelta = k - prev.kraken;
-      setPriceTrend({
-        binance: getRelativePriceClass(bDelta, kDelta),
-        kraken: getRelativePriceClass(kDelta, bDelta),
-      });
-    }
-
-    prevPricesRef.current = { binance: b, kraken: k };
-  }, [marketData]);
-
-  useEffect(() => {
-    setHistory([]);
-    setPriceTrend({ binance: '', kraken: '' });
-    prevPricesRef.current = { binance: null, kraken: null };
-  }, [selectedSymbol]);
-
-  const activityRows = useMemo(() => {
-    return (recentTrades || []).map((trade, idx) => {
-      const gross = trade.gross_pnl ?? trade.amount * (trade.sell_price - trade.buy_price);
-      const fees = trade.fees ?? 0;
-      const side = tradeSide(trade);
-      return {
-        id: `${trade.timestamp}-${idx}`,
-        timestamp: trade.timestamp,
-        side,
-        route: `${trade.buy_exchange} → ${trade.sell_exchange}`,
-        gross,
-        fees,
-        net: trade.pnl ?? 0,
-      };
-    });
-  }, [recentTrades]);
-
-  const pnlHistory = useMemo(() => {
-    if (!recentTrades?.length) return [];
-    let cumGross = 0;
-    let cumFees = 0;
-    let cumNet = 0;
-    const sorted = [...recentTrades].reverse();
-    return sorted.map((t, i) => {
-      const gross = t.gross_pnl ?? t.amount * (t.sell_price - t.buy_price);
-      const fees = t.fees ?? 0;
-      cumGross += gross;
-      cumFees += fees;
-      cumNet += t.pnl ?? 0;
-      return {
-        index: i + 1,
-        gross: cumGross,
-        fees: cumFees,
-        pnl: cumNet,
-      };
-    });
-  }, [recentTrades]);
-
-  const isConnected = isRunning && !marketDataError && !!marketData;
-  const isLoading = marketDataLoading || simStatusLoading || tradesLoading;
-  const hasChartData = history.length > 0;
-
-  const binancePrice = marketData?.binance_price ?? marketData?.mid_price;
-  const krakenPrice = marketData?.kraken_price;
-  const spread = marketData?.spread ?? (binancePrice != null && krakenPrice != null ? binancePrice - krakenPrice : null);
-  const spreadPct = marketData?.spread_pct ?? (spread != null && krakenPrice ? (spread / krakenPrice) * 100 : null);
-  const signalStrength = marketData?.signal_strength ?? 0;
-  const adaptiveThreshold = marketData?.adaptive_threshold ?? 1;
-  const signalTriggered = signalStrength >= adaptiveThreshold;
-
-  const handleExportCsv = useCallback(() => {
-    exportActivityCsv(activityRows);
-  }, [activityRows]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -631,7 +487,6 @@ function AppContent() {
         <h1 className="top-bar-title">Cross-Exchange Statistical Arbitrage System</h1>
         <div className="top-bar-right">
           <div className="tab-nav">
-            <button type="button" className={`tab-btn ${activeTab === 'live' ? 'active' : ''}`} onClick={() => setActiveTab('live')}>Live Monitor</button>
             <button type="button" className={`tab-btn tab-btn-bsdex ${activeTab === 'bsdex' ? 'active' : ''}`} onClick={() => setActiveTab('bsdex')}>BSDEX vs World</button>
             <button type="button" className={`tab-btn ${activeTab === 'backtest' ? 'active' : ''}`} onClick={() => setActiveTab('backtest')}>BSDEX Backtest</button>
           </div>
@@ -644,11 +499,6 @@ function AppContent() {
       </header>
 
       <main className="dashboard">
-        {activeTab === 'live' && marketDataError && (
-          <div className="error-banner">
-            Unable to load market data. Check that the backend is running at {API_BASE_URL}.
-          </div>
-        )}
 
         {/* ══════════════════════════════════════════════════════════
              BACKTEST TAB
@@ -800,62 +650,102 @@ function AppContent() {
             {hbtResult && hbtStatus === 'done' && (() => {
               const s = hbtResult.summary;
               const netPos = s.total_pnl_eur >= 0;
+              const beStr  = `${s.breakeven_spread_pct?.toFixed(3)}%`;
               return (
                 <>
-                  {/* Summary strip */}
+                  {/* ── Summary KPI strip ─────────────────────────────── */}
                   <section>
                     <h2 className="section-header">
                       Results — {s.symbol} · {s.start_dt?.slice(0,10)} → {s.end_dt?.slice(0,10)}
                       {' '}({s.duration_hours}h · {s.candles_processed?.toLocaleString()} candles)
                     </h2>
-                    <div className="market-overview" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+
+                    {/* Row 1: P&L trio — always shows gross → fees → net so viewer can verify */}
+                    <div className="market-overview" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 8 }}>
                       {[
-                        ['Total Trades',       s.total_trades,                                ''],
-                        ['Win Rate',           `${s.win_rate_pct?.toFixed(1)}%`,              s.win_rate_pct > 50 ? 'positive' : ''],
-                        ['Gross PnL (€)',      `€${s.gross_pnl_eur?.toFixed(4)}`,             s.gross_pnl_eur >= 0 ? 'positive' : 'negative'],
-                        ['Total Fees (€)',     `€${s.total_fees_eur?.toFixed(4)}`,            'negative'],
-                        ['Net PnL (€)',        `€${s.total_pnl_eur?.toFixed(4)}`,             netPos ? 'positive' : 'negative'],
-                        ['Max Drawdown (€)',   `€${s.max_drawdown_eur?.toFixed(4)}`,          'negative'],
-                        ['Break-even spread', `${s.breakeven_spread_pct?.toFixed(3)}%`,       ''],
-                        ['Capital / leg',     `€${s.capital_eur?.toLocaleString()}`,          ''],
-                      ].map(([label, val, cls]) => (
+                        ['Gross PnL',  `€${s.gross_pnl_eur?.toFixed(4)}`,  s.gross_pnl_eur >= 0 ? 'positive' : 'negative', 'Price gain before fees'],
+                        ['Total Fees', `−€${s.total_fees_eur?.toFixed(4)}`, 'negative', 'Both legs combined'],
+                        ['Net PnL',   `€${s.total_pnl_eur?.toFixed(4)}`,   netPos ? 'positive' : 'negative', 'Gross − Fees (exact)'],
+                      ].map(([label, val, cls, sub]) => (
                         <div className="card" key={label}>
                           <div className="card-title">{label}</div>
-                          <div className={`card-value ${cls}`} style={{ fontSize: 20 }}>{val ?? '—'}</div>
+                          <div className={`card-value ${cls}`} style={{ fontSize: 22 }}>{val ?? '—'}</div>
+                          <div className="card-subvalue">{sub}</div>
                         </div>
                       ))}
                     </div>
 
-                    {/* Human interpretation */}
-                    <div className="card" style={{ marginTop: 12, padding: '14px 18px' }}>
-                      <div className="card-title">Plain-English Interpretation</div>
-                      <p style={{ margin: '8px 0 0', fontSize: 13, lineHeight: 1.7, color: '#343a40' }}>
-                        If you had run the BSDEX vs World strategy on <strong>{s.symbol}</strong> from{' '}
-                        <strong>{s.start_dt?.slice(0,16).replace('T',' ')} UTC</strong> to{' '}
-                        <strong>{s.end_dt?.slice(0,16).replace('T',' ')} UTC</strong> ({s.duration_hours}h),
-                        deploying <strong>€{s.capital_eur?.toLocaleString()}</strong> per venue per trade,
-                        with Bitstamp taker <strong>{s.venue_a_taker_pct?.toFixed(3)}%</strong> and
-                        LMAX taker <strong>{s.venue_b_taker_pct?.toFixed(3)}%</strong>:
-                        you would have executed <strong>{s.total_trades}</strong> trades,
-                        paid <strong>€{s.total_fees_eur?.toFixed(4)}</strong> in fees,
-                        and earned a net PnL of{' '}
-                        <strong className={netPos ? 'positive' : 'negative'}>
-                          {netPos ? '+' : ''}€{s.total_pnl_eur?.toFixed(4)}
-                        </strong>.{' '}
-                        {s.total_trades === 0
-                          ? 'No trades fired — the real spread never exceeded the break-even threshold during this period. This is honest: fees eat narrow spreads.'
-                          : `Win rate: ${s.win_rate_pct?.toFixed(1)}%. Max drawdown: €${s.max_drawdown_eur?.toFixed(4)}.`}
-                      </p>
-                      <p style={{ margin: '6px 0 0', fontSize: 11, color: '#6c757d' }}>
-                        Data: {s.data_sources}. Logic: rolling z-score (window {s.zscore_window_min} min, threshold {s.zscore_threshold}σ), trade cooldown {s.trade_cooldown_min} min.
-                      </p>
+                    {/* Row 2: operational metrics */}
+                    <div className="market-overview" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                      {[
+                        ['Total Trades',    s.total_trades,                                   '',         ''],
+                        ['Win Rate',        `${s.win_rate_pct?.toFixed(1)}%`,                 s.win_rate_pct > 50 ? 'positive' : '', ''],
+                        ['Max Drawdown',    `€${s.max_drawdown_eur?.toFixed(4)}`,             'negative', ''],
+                        ['Allocated VaR',  `€${s.capital_eur?.toLocaleString()} / leg`,       '',         ''],
+                      ].map(([label, val, cls]) => (
+                        <div className="card" key={label}>
+                          <div className="card-title">{label}</div>
+                          <div className={`card-value ${cls}`} style={{ fontSize: 18 }}>{val ?? '—'}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Microstructure parameter table */}
+                    <div className="card" style={{ marginTop: 10, padding: '14px 18px' }}>
+                      <div className="card-title" style={{ marginBottom: 10 }}>Strategy Parameters &amp; Operational Safeguards</div>
+                      <table className="param-table">
+                        <thead>
+                          <tr><th>Parameter</th><th>Value</th><th>Operational Safeguard</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>Signal threshold</td>
+                            <td>{s.zscore_threshold}σ rolling z-score</td>
+                            <td>Adaptive volatility tracking</td>
+                          </tr>
+                          <tr>
+                            <td>Lookback window</td>
+                            <td>{s.zscore_window_min} min ({s.candles_processed?.toLocaleString()} intervals)</td>
+                            <td>1-min OHLCV replay (not tick data)</td>
+                          </tr>
+                          <tr>
+                            <td>Combined friction drag</td>
+                            <td>{(s.breakeven_spread_pct)?.toFixed(3)}% ({((s.venue_a_taker_pct ?? 0) + (s.venue_b_taker_pct ?? 0)).toFixed(3)} bp)</td>
+                            <td>Break-even gate on every trade</td>
+                          </tr>
+                          <tr>
+                            <td>Cooldown window</td>
+                            <td>{s.trade_cooldown_min} min</td>
+                            <td>Toxic flow &amp; mean-reversion guard</td>
+                          </tr>
+                          <tr>
+                            <td>FX conversion</td>
+                            <td>ECB rate via Frankfurter API</td>
+                            <td>Refreshed every 60 s (daily fixing)</td>
+                          </tr>
+                          <tr>
+                            <td>Execution price model</td>
+                            <td>1-min close (no bid-ask simulated)</td>
+                            <td>Understates real cost; treat as lower bound</td>
+                          </tr>
+                          <tr>
+                            <td>Volume weighting</td>
+                            <td>Not applied (volume = 0 in OHLCV replay)</td>
+                            <td>Backtest uses raw z-score only — consistent with live BSDEX trigger</td>
+                          </tr>
+                          <tr>
+                            <td>Data sources</td>
+                            <td colSpan={2}>{s.data_sources}</td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </div>
                   </section>
 
-                  {/* Equity curve */}
+                  {/* ── Equity curve ─────────────────────────────────── */}
                   {hbtResult.equity_curve?.length > 1 && (
                     <section>
-                      <h2 className="section-header">Cumulative PnL Curve (EUR)</h2>
+                      <h2 className="section-header">Cumulative Net PnL — EUR</h2>
                       <div className="card chart-card chart-card-tall">
                         <div className="chart-container chart-container-tall">
                           <ResponsiveContainer width="100%" height="100%">
@@ -865,7 +755,7 @@ function AppContent() {
                                 tickFormatter={(v) => v?.slice(11, 16)} />
                               <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
                                 tickFormatter={(v) => `€${v.toFixed(2)}`} />
-                              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`€${v.toFixed(4)}`, 'Cumulative PnL']} />
+                              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`€${v.toFixed(4)}`, 'Cumulative Net PnL']} />
                               <ReferenceLine y={0} stroke="#6C757D" strokeDasharray="4 2" />
                               <Area type="monotone" dataKey="cumulative_pnl" name="Net PnL (€)"
                                 stroke={netPos ? '#198754' : '#DC3545'}
@@ -878,13 +768,14 @@ function AppContent() {
                     </section>
                   )}
 
-                  {/* Spread series */}
+                  {/* ── Spread + Z-score charts ───────────────────────── */}
                   {hbtResult.spread_series?.length > 1 && (
                     <section className="charts-stack">
                       <div className="card chart-card chart-card-tall">
                         <div className="card-title">Historical Spread % — Bitstamp vs Binance→EUR</div>
                         <p className="chart-legend-hint">
-                          Positive = Bitstamp expensive. Dashed lines = ±{((hbtFeeA + hbtFeeB) * 100).toFixed(3)}% break-even.
+                          Positive = Bitstamp expensive (sell A, buy B). Dashed lines = ±{beStr} break-even.
+                          Spread must exceed break-even for a trade to fire.
                         </p>
                         <div className="chart-container chart-container-tall">
                           <ResponsiveContainer width="100%" height="100%">
@@ -894,11 +785,13 @@ function AppContent() {
                                 tickFormatter={(v) => v?.slice(11, 16)} />
                               <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
                                 tickFormatter={(v) => `${v.toFixed(3)}%`} />
-                              <Tooltip contentStyle={tooltipStyle} formatter={(v, n) => [typeof v === 'number' ? `${v.toFixed(4)}${n === 'Spread %' ? '%' : ''}` : v, n]} />
+                              <Tooltip contentStyle={tooltipStyle}
+                                formatter={(v, n) => [typeof v === 'number' ? `${v.toFixed(4)}${n === 'Spread %' ? '%' : ''}` : v, n]} />
                               <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" />
-                              <ReferenceLine y={(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1}
-                                label={{ value: 'B/E', position: 'insideTopRight', fontSize: 9, fill: '#DC3545' }} />
-                              <ReferenceLine y={-(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1} />
+                              <ReferenceLine y={(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1.5}
+                                label={{ value: `+B/E ${beStr}`, position: 'insideTopRight', fontSize: 9, fill: '#DC3545' }} />
+                              <ReferenceLine y={-(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1.5}
+                                label={{ value: `-B/E`, position: 'insideBottomRight', fontSize: 9, fill: '#DC3545' }} />
                               <Area type="monotone" dataKey="spread_pct" name="Spread %" dot={false} strokeWidth={1.5}
                                 stroke="#0D6EFD" fill="#DBEAFE" fillOpacity={0.35} isAnimationActive={false} />
                             </ComposedChart>
@@ -907,8 +800,12 @@ function AppContent() {
                       </div>
 
                       <div className="card chart-card chart-card-tall">
-                        <div className="card-title">Z-Score vs Threshold (60-min rolling)</div>
-                        <p className="chart-legend-hint">Green = z-score. Red dashed = 1.5σ threshold. Trade fires on crossover + spread &gt; B/E.</p>
+                        <div className="card-title">Raw Z-Score vs Adaptive Threshold — {s.zscore_window_min}-min rolling</div>
+                        <p className="chart-legend-hint">
+                          <strong>Trade trigger:</strong> |z-score| ≥ threshold <em>and</em> |spread| &gt; {beStr}.
+                          The z-score here is the raw rolling z-score — identical to the quantity used in live mode
+                          for BSDEX (volume weighting is not applied, since Bitstamp REST volumes are polled, not streamed).
+                        </p>
                         <div className="chart-container chart-container-tall">
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={hbtResult.spread_series} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
@@ -919,9 +816,9 @@ function AppContent() {
                               <Tooltip contentStyle={tooltipStyle} />
                               <Legend />
                               <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" />
-                              <Line type="monotone" dataKey="z_score" name="Z-Score" stroke="#198754"
+                              <Line type="monotone" dataKey="z_score" name="Raw Z-Score (trigger qty)" stroke="#198754"
                                 dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={false} />
-                              <Line type="monotone" dataKey="threshold" name="Threshold (1.5σ)" stroke="#DC3545"
+                              <Line type="monotone" dataKey="threshold" name={`Threshold (${s.zscore_threshold}σ)`} stroke="#DC3545"
                                 dot={false} strokeWidth={1.5} strokeDasharray="6 4" isAnimationActive={false} />
                             </LineChart>
                           </ResponsiveContainer>
@@ -930,7 +827,7 @@ function AppContent() {
                     </section>
                   )}
 
-                  {/* Trade log */}
+                  {/* ── Trade log ────────────────────────────────────── */}
                   {hbtResult.trades?.length > 0 ? (
                     <section className="activity-section">
                       <div className="card">
@@ -1000,481 +897,6 @@ function AppContent() {
         )}
 
         {/* ══════════════════════════════════════════════════════════
-             LIVE TAB
-            ══════════════════════════════════════════════════════════ */}
-        {activeTab === 'live' && (<>
-
-        <section>
-          <h2 className="section-header">Market Overview</h2>
-          
-          <div className="market-overview">
-            <div className="card">
-              <div className="card-title">Binance — {selectedSymbol}</div>
-              {isLoading && !binancePrice ? (
-                <div className="skeleton skeleton-value" />
-              ) : (
-                <div className={`card-value price-trend ${priceTrend.binance || ''}`}>
-                  {binancePrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}
-                </div>
-              )}
-            </div>
-            <div className="card">
-              <div className="card-title">Kraken — {selectedSymbol}</div>
-              {isLoading && !krakenPrice ? (
-                <div className="skeleton skeleton-value" />
-              ) : (
-                <div className={`card-value price-trend ${priceTrend.kraken || ''}`}>
-                  {krakenPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}
-                </div>
-              )}
-            </div>
-            <div className="card">
-              <div className="card-title">Spread</div>
-              {isLoading && spread == null ? (
-                <div className="skeleton skeleton-value" />
-              ) : (
-                <>
-                  <div className={`card-value ${spread >= 0 ? 'positive' : 'negative'}`}>
-                    {spread != null ? `${spread >= 0 ? '+' : ''}${spread.toFixed(2)}` : '—'}
-                  </div>
-                  <div className={`card-subvalue ${spreadPct >= 0 ? 'positive' : 'negative'}`}>
-                    {spreadPct != null ? `${spreadPct >= 0 ? '+' : ''}${spreadPct.toFixed(4)}%` : ''}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="card">
-              <div className="card-title">Signal Strength</div>
-              {isLoading && !marketData ? (
-                <div className="skeleton skeleton-value" />
-              ) : (
-                <>
-                  <div className={`zscore-display card-value ${getSignalClass(signalStrength, adaptiveThreshold)}`}>
-                    {formatMetric(signalStrength)}
-                  </div>
-                  <div className="card-subvalue">
-                    Threshold: {formatMetric(adaptiveThreshold)}
-                    {signalTriggered && ` · ${marketData?.signal} triggered`}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-          <p className="chart-legend-hint price-legend-hint">
-            Binance/Kraken stay <span className="positive">green</span> or <span className="negative">red</span> until the next tick — whichever exchange moved more vs the other.
-          </p>
-        </section>
-
-        {/* ── Transaction Model Flow ─────────────────────────────── */}
-        <section>
-          <h2 className="section-header">Transaction Model — Live State</h2>
-          <div className="txn-flow">
-            {/* SETUP */}
-            <div className="txn-box">
-              <div className="txn-label setup">SETUP</div>
-              <div className="txn-row"><span className="txn-key">Capital per leg</span><span className="txn-val">{configApplied ? `${configApplied.capital_per_leg_usdt.toLocaleString()} USDT` : '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Implied trade size</span><span className="txn-val">{binancePrice && configApplied ? `≈ ${(configApplied.capital_per_leg_usdt / binancePrice).toFixed(5)} ${selectedSymbol.split('/')[0]}` : '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Fee tier</span><span className="txn-val">{FEE_TIER_LABELS[configApplied?.fee_tier ?? 'retail'] ?? 'Retail'}</span></div>
-              <div className="txn-row"><span className="txn-key">Binance taker</span><span className="txn-val">{configApplied ? `${configApplied.binance_taker_pct}%` : '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Kraken taker</span><span className="txn-val">{configApplied ? `${configApplied.kraken_taker_pct}%` : '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Break-even spread</span><span className="txn-val" style={{color:'#DC3545'}}>{configApplied ? `> ${configApplied.break_even_spread_pct}%` : '—'}</span></div>
-            </div>
-
-            <div className="txn-arrow">→</div>
-
-            {/* SIGNAL DETECTED */}
-            <div className="txn-box">
-              <div className="txn-label signal">SIGNAL DETECTED</div>
-              <div className="txn-row"><span className="txn-key">Binance price</span><span className="txn-val">{binancePrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Kraken price</span><span className="txn-val">{krakenPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? '—'}</span></div>
-              <div className="txn-row">
-                <span className="txn-key">Spread</span>
-                <span className={`txn-val ${spread != null && spread !== 0 ? (spread > 0 ? 'positive' : 'negative') : ''}`}>
-                  {spread != null ? `${spread >= 0 ? '+' : ''}${spread.toFixed(4)} (${spreadPct != null ? spreadPct.toFixed(4) : '—'}%)` : '—'}
-                </span>
-              </div>
-              <div className="txn-row">
-                <span className="txn-key">Signal Strength</span>
-                <span className={`txn-val ${getSignalClass(signalStrength, adaptiveThreshold)}`}>{formatMetric(signalStrength)}</span>
-              </div>
-              <div className="txn-row">
-                <span className="txn-key">Threshold</span>
-                <span className="txn-val">{formatMetric(adaptiveThreshold)}</span>
-              </div>
-              <div className="txn-row">
-                <span className="txn-key">Signal</span>
-                <span className={`txn-val ${marketData?.signal === 'BUY' ? 'positive' : marketData?.signal === 'SELL' ? 'negative' : ''}`}>{marketData?.signal ?? 'HOLD'}</span>
-              </div>
-            </div>
-
-            <div className="txn-arrow">→</div>
-
-            {/* SIMULTANEOUS EXECUTION */}
-            <div className={`txn-box ${signalTriggered ? 'txn-box-active' : ''}`}>
-              <div className="txn-label execution">SIMULTANEOUS EXECUTION</div>
-              {signalTriggered && marketData?.signal !== 'HOLD' ? (
-                <>
-                  {(() => {
-                    const cap   = configApplied?.capital_per_leg_usdt ?? 1000;
-                    const base  = selectedSymbol.split('/')[0];
-                    const btAmt = binancePrice ? (cap / binancePrice).toFixed(5) : '?';
-                    const ktAmt = krakenPrice  ? (cap / krakenPrice).toFixed(5)  : '?';
-                    return marketData.signal === 'SELL' ? (
-                      <>
-                        <div className="txn-exec-leg sell">
-                          <span className="exec-side">SELL</span> {btAmt} {base} on Binance<br/>
-                          <span className="exec-price">@ {binancePrice?.toFixed(2)} · proceeds ≈ ${(cap * (1 - (configApplied?.binance_taker_pct ?? 0.1) / 100)).toFixed(2)}</span>
-                        </div>
-                        <div className="txn-exec-leg buy">
-                          <span className="exec-side">BUY</span> {ktAmt} {base} on Kraken<br/>
-                          <span className="exec-price">@ {krakenPrice?.toFixed(2)} · cost ≈ ${(cap * (1 + (configApplied?.kraken_taker_pct ?? 0.4) / 100)).toFixed(2)}</span>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="txn-exec-leg buy">
-                          <span className="exec-side">BUY</span> {btAmt} {base} on Binance<br/>
-                          <span className="exec-price">@ {binancePrice?.toFixed(2)} · cost ≈ ${(cap * (1 + (configApplied?.binance_taker_pct ?? 0.1) / 100)).toFixed(2)}</span>
-                        </div>
-                        <div className="txn-exec-leg sell">
-                          <span className="exec-side">SELL</span> {ktAmt} {base} on Kraken<br/>
-                          <span className="exec-price">@ {krakenPrice?.toFixed(2)} · proceeds ≈ ${(cap * (1 - (configApplied?.kraken_taker_pct ?? 0.4) / 100)).toFixed(2)}</span>
-                        </div>
-                      </>
-                    );
-                  })()}
-                  <div className="txn-result">
-                    Net position: market-neutral. Spread captured.
-                  </div>
-                </>
-              ) : (
-                <div className="txn-waiting">Waiting for z-score ≥ threshold…</div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="charts-stack">
-          {/* Spread chart replaces the old Price Comparison */}
-          <div className="card chart-card chart-card-tall">
-            <div className="card-title">Cross-Exchange Spread</div>
-            <p className="chart-legend-hint">
-              Bid<sub>Binance</sub> − Mid<sub>Kraken</sub> as a percentage.
-              Positive → Binance is expensive; negative → Kraken is expensive.
-              <span style={{ marginLeft: 8, color: '#6C757D' }}>|spread| &gt; threshold = arbitrage signal.</span>
-            </p>
-            {!hasChartData ? (
-              <div className="skeleton skeleton-chart-tall" />
-            ) : (
-              <div className="chart-container chart-container-tall">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={history} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <YAxis stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} tickFormatter={(v) => `${v.toFixed(3)}%`} />
-                    <Tooltip content={<SpreadTooltip />} />
-                    <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" label={{ value: 'Par', position: 'insideLeft', fontSize: 10, fill: '#ADB5BD' }} />
-                    <Area type="monotone" dataKey="spreadPct" name="Spread %" dot={false} strokeWidth={2}
-                      stroke="#0D6EFD" fill="#DBEAFE" fillOpacity={0.4} {...CHART_ANIMATION} />
-                    <Line type="monotone" dataKey="spreadAbs" name="Spread $" dot={false} strokeWidth={0} hide />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-          <div className="card chart-card chart-card-tall">
-            <div className="card-title">Signal Engine</div>
-            <p className="chart-legend-hint">Trade when strength (green) crosses the adaptive threshold (red).</p>
-            {!hasChartData ? (
-              <div className="skeleton skeleton-chart-tall" />
-            ) : (
-              <div className="chart-container chart-container-tall">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={history} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <YAxis stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Legend />
-                    <Line type="monotone" dataKey="signalStrength" name="Signal Strength" stroke="#198754" dot={false} strokeWidth={2.5} {...CHART_ANIMATION} />
-                    <Line type="monotone" dataKey="threshold" name="Adaptive Threshold" stroke="#DC3545" dot={false} strokeWidth={2} strokeDasharray="6 4" {...CHART_ANIMATION} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="activity-section">
-          <div className="card">
-            <div className="card-title">Trade Activity</div>
-            <p className="chart-legend-hint">
-              Executed arbs: gross spread capture, fees (both exchanges), net PnL. Session fees:{' '}
-              <strong>{formatUsd(simulationStatus?.total_fees_paid ?? 0)}</strong> USDT
-            </p>
-            <div className="signal-table-wrap">
-              {tradesLoading && !activityRows.length ? (
-                <div className="skeleton skeleton-chart" style={{ height: 160 }} />
-              ) : activityRows.length === 0 ? (
-                <div className="empty-state">No trades yet — activity appears after the first simulated fill</div>
-              ) : (
-                <table className="signal-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Side</th>
-                      <th>Route</th>
-                      <th>Gross</th>
-                      <th>Fees</th>
-                      <th>Net PnL</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activityRows.map((row) => (
-                      <tr key={row.id}>
-                        <td>{new Date(row.timestamp).toLocaleString()}</td>
-                        <td className={row.side === 'BUY' ? 'signal-buy' : 'signal-sell'}>{row.side}</td>
-                        <td className="route-cell">{row.route}</td>
-                        <td className={row.gross >= 0 ? 'signal-buy' : 'signal-sell'}>{formatUsd(row.gross)}</td>
-                        <td className="negative">{formatUsd(row.fees)}</td>
-                        <td className={row.net >= 0 ? 'signal-buy' : 'signal-sell'}>{formatUsd(row.net)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div className="export-row">
-              <button type="button" className="btn btn-export" onClick={handleExportCsv} disabled={!activityRows.length}>
-                Export CSV
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Strategy Configuration Panel ── */}
-        <section>
-          <h2 className="section-header">Strategy Configuration</h2>
-          <div className="card config-panel">
-            <div className="config-grid">
-              <div className="config-field">
-                <label className="config-label" htmlFor="fee-tier-select">Fee Tier</label>
-                <select
-                  id="fee-tier-select"
-                  className="config-select"
-                  value={configDraft.feeTier}
-                  onChange={(e) => setConfigDraft((p) => ({ ...p, feeTier: e.target.value }))}
-                >
-                  {Object.entries(FEE_TIER_LABELS).map(([key, label]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
-                {configApplied && (
-                  <div className="config-hint">
-                    Active: {FEE_TIER_LABELS[configApplied.fee_tier] ?? configApplied.fee_tier}
-                    &nbsp;·&nbsp;Binance {configApplied.binance_taker_pct}% / Kraken {configApplied.kraken_taker_pct}%
-                    &nbsp;·&nbsp;<strong>Break-even spread: {configApplied.break_even_spread_pct}%</strong>
-                  </div>
-                )}
-              </div>
-
-              <div className="config-field">
-                <label className="config-label" htmlFor="capital-input">
-                  Capital per leg (USDT)
-                </label>
-                <input
-                  id="capital-input"
-                  type="number"
-                  className="config-input"
-                  min="10"
-                  step="100"
-                  value={configDraft.capitalPerLeg}
-                  onChange={(e) => setConfigDraft((p) => ({ ...p, capitalPerLeg: e.target.value }))}
-                />
-                <div className="config-hint">
-                  USDT deployed on each exchange.&nbsp;
-                  {binancePrice
-                    ? `≈ ${(parseFloat(configDraft.capitalPerLeg || 0) / binancePrice).toFixed(4)} ${selectedSymbol.split('/')[0]} @ live price`
-                    : 'Trade size = capital ÷ current ask'}
-                </div>
-              </div>
-
-              <div className="config-actions">
-                <button
-                  type="button"
-                  className="btn btn-apply"
-                  onClick={handleApplyConfig}
-                  disabled={configSaving}
-                >
-                  {configSaving ? 'Applying…' : 'Apply'}
-                </button>
-                {configError && <div className="config-error">{configError}</div>}
-                {configApplied && !configError && (
-                  <div className="config-success">
-                    ✓ Applied — next trade uses {configApplied.fee_tier}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Fee tier info table */}
-            <div className="fee-tier-table-wrap">
-              <table className="fee-tier-table">
-                <thead>
-                  <tr>
-                    <th>Tier</th>
-                    <th>Binance Taker</th>
-                    <th>Kraken Taker</th>
-                    <th>~30d Vol Required</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    ['retail',         '0.100%', '0.400%', '—'],
-                    ['retail_bnb',     '0.075%', '0.400%', '— (hold BNB)'],
-                    ['vip3',           '0.060%', '0.240%', '$20M'],
-                    ['vip5',           '0.048%', '0.200%', '$150M'],
-                    ['vip9',           '0.024%', '0.100%', '$5B'],
-                    ['market_maker',   '0.020%', '0.100%', '$100M'],
-                    ['dekabank_proxy', '0.040%', '0.140%', '$100M (negotiated)'],
-                    ['zero_fee',       '0.000%', '0.000%', 'Illustrative only'],
-                  ].map(([key, bn, kr, vol]) => (
-                    <tr key={key} className={configApplied?.fee_tier === key ? 'active-tier-row' : ''}>
-                      <td>{FEE_TIER_LABELS[key]}</td>
-                      <td>{bn}</td>
-                      <td>{kr}</td>
-                      <td>{vol}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section className="bottom-section">
-          <div className="card controls-panel">
-            <div className="card-title">System Controls &amp; Stats</div>
-            <div className="control-row">
-              <button type="button" className="btn btn-start" onClick={() => setIsRunning(true)} disabled={isRunning}>
-                Start
-              </button>
-              <button type="button" className="btn btn-stop" onClick={() => setIsRunning(false)} disabled={!isRunning}>
-                Stop
-              </button>
-              <select
-                className="pair-select"
-                value={selectedSymbol}
-                onChange={(e) => setSelectedSymbol(e.target.value)}
-                aria-label="Trading pair"
-              >
-                {SYMBOLS.map((sym) => (
-                  <option key={sym} value={sym}>{sym}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="stats-grid">
-              <div className="stat-item">
-                <div className="stat-label">Total Trades</div>
-                <div className="stat-value">{simulationStatus?.total_trades ?? 0}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Current Signal</div>
-                <div className="stat-value">{marketData?.signal ?? 'HOLD'}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Cumulative PnL</div>
-                <div className={`stat-value ${(simulationStatus?.total_pnl ?? 0) >= 0 ? 'positive' : 'negative'}`}>
-                  {simulationStatus?.total_pnl?.toFixed(6) ?? '0.000000'}
-                </div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Win Rate</div>
-                <div className="stat-value">{simulationStatus?.win_rate?.toFixed(1) ?? '0.0'}%</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Total Fees</div>
-                <div className="stat-value negative">{formatUsd(simulationStatus?.total_fees_paid ?? 0)}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Sharpe Ratio</div>
-                <div className="stat-value">
-                  {simulationStatus?.sharpe_ratio != null ? simulationStatus.sharpe_ratio.toFixed(2) : 'N/A'}
-                </div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Max Drawdown</div>
-                <div className="stat-value negative">
-                  {simulationStatus?.max_drawdown != null
-                    ? formatPercent(simulationStatus.max_drawdown)
-                    : 'N/A'}
-                </div>
-              </div>
-            </div>
-
-            {isFetching && isRunning && (
-              <div className="card-subvalue" style={{ marginTop: 12 }}>Refreshing data…</div>
-            )}
-          </div>
-
-          <div className="card pnl-chart-card">
-            <div className="card-title">Cumulative Performance</div>
-            <p className="chart-legend-hint">
-              <span style={{ color: '#86c99a' }}>—</span> Gross income &nbsp;
-              <span style={{ color: '#adb5bd' }}>---</span> Fees &nbsp;
-              <span style={{ color: '#198754', fontWeight: 600 }}>—</span> Net PnL
-            </p>
-            {pnlHistory.length === 0 ? (
-              <div className="empty-state">PnL breakdown appears after trades execute</div>
-            ) : (
-              <div className="chart-container pnl-chart-container">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={pnlHistory} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                    <XAxis dataKey="index" stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }} />
-                    <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }} />
-                    <Tooltip content={<PnlTooltip />} />
-                    <Legend />
-                    <Area
-                      type="monotone"
-                      dataKey="gross"
-                      name="Gross (income)"
-                      stroke="#86c99a"
-                      fill="#86c99a"
-                      fillOpacity={0.12}
-                      strokeWidth={1}
-                      {...CHART_ANIMATION}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="fees"
-                      name="Fees (expense)"
-                      stroke="#adb5bd"
-                      strokeWidth={1.5}
-                      strokeDasharray="4 4"
-                      dot={false}
-                      {...CHART_ANIMATION}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="pnl"
-                      name="Net PnL"
-                      stroke={(simulationStatus?.total_pnl ?? 0) >= 0 ? '#198754' : '#DC3545'}
-                      strokeWidth={3}
-                      dot={false}
-                      {...CHART_ANIMATION}
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        </section>
-        </>)}
-
-        {/* ══════════════════════════════════════════════════════════
              BSDEX VS WORLD TAB
             ══════════════════════════════════════════════════════════ */}
         {activeTab === 'bsdex' && (<>
@@ -1519,13 +941,15 @@ function AppContent() {
               </div>
             </div>
             <div className="card">
-              <div className="card-title">Signal Strength</div>
+              <div className="card-title">Raw Z-Score <span style={{fontSize:11,color:'#6C757D',fontWeight:400}}>(trigger quantity)</span></div>
               <div className={`zscore-display card-value ${getSignalClass(Math.abs(bsdexZScore ?? 0), bsdexThreshold ?? 1)}`}>
                 {bsdexZScore != null ? bsdexZScore.toFixed(4) : '—'}
               </div>
               <div className="card-subvalue">
                 Threshold: {bsdexThreshold?.toFixed(4) ?? '—'}
-                {bsdexSignalTriggered && <span className="positive"> · SIGNAL</span>}
+                {bsdexSignalTriggered && <span className="positive"> · EXECUTES</span>}
+                {bsdexSignalGated && <span style={{color:'#FFC107'}}> · GATED (spread &lt; B/E)</span>}
+                {bsdexSignalCooldown && <span style={{color:'#6C757D'}}> · COOLDOWN</span>}
               </div>
             </div>
           </div>
@@ -1568,8 +992,14 @@ function AppContent() {
               </div>
               <div className="txn-row"><span className="txn-key">Threshold</span><span className="txn-val">{bsdexThreshold?.toFixed(4) ?? '—'}</span></div>
               <div className="txn-row">
-                <span className="txn-key">Signal</span>
-                <span className={`txn-val ${bsdexSignalTriggered ? 'positive' : ''}`}>{bsdexSignalState}</span>
+                <span className="txn-key">State</span>
+                <span className={`txn-val ${bsdexSignalTriggered ? 'positive' : bsdexSignalGated ? '' : ''}`}
+                  style={{color: bsdexSignalTriggered ? '#28A745' : bsdexSignalGated ? '#FFC107' : bsdexSignalCooldown ? '#6C757D' : '#ADB5BD'}}>
+                  {bsdexSignalTriggered ? 'SIGNAL — executing'
+                    : bsdexSignalGated ? 'SIGNAL — spread too thin for fees'
+                    : bsdexSignalCooldown ? 'SIGNAL — in cooldown'
+                    : 'HOLD'}
+                </span>
               </div>
             </div>
 
@@ -1612,13 +1042,42 @@ function AppContent() {
                   })()}
                   <div className="txn-result">Net position: market-neutral. EUR spread captured.</div>
                 </>
+              ) : bsdexSignalGated ? (
+                <div className="txn-waiting" style={{borderColor:'#856404',color:'#856404',background:'rgba(255,193,7,0.08)'}}>
+                  <strong>Z-score threshold crossed</strong> but spread ({bsdexSpreadPct != null ? Math.abs(bsdexSpreadPct).toFixed(4) : '?'}%) is below break-even ({bsdexBreakevenPct.toFixed(3)}%). No trade — spread does not cover fees.
+                </div>
+              ) : bsdexSignalCooldown ? (
+                <div className="txn-waiting" style={{borderColor:'#6C757D',color:'#6C757D',background:'rgba(108,117,125,0.08)'}}>
+                  Signal active but within post-trade cooldown window. Waiting before next trade…
+                </div>
               ) : (
                 <div className="txn-waiting">
-                  Waiting for |z-score| ≥ threshold &amp; |spread| &gt; {bsdexBreakevenPct.toFixed(3)}%…
+                  Waiting: |z-score| ≥ threshold <em>and</em> |spread| &gt; {bsdexBreakevenPct.toFixed(3)}% (break-even)…
                 </div>
               )}
             </div>
           </div>
+        </section>
+
+        {/* ── Methodology Disclosure ──────────────────────────── */}
+        <section>
+          <details className="methodology-disclosure">
+            <summary>Monitor Methodology &amp; Model Assumptions</summary>
+            <div className="methodology-body">
+              <div className="methodology-col">
+                <h4>Architecture</h4>
+                <p>This is a <strong>latency-tolerant statistical arbitrage monitor</strong> — not an HFT execution engine. It polls Bitstamp and Binance REST endpoints every ~1 s. The spread dislocation exploited (BSDEX/Bitstamp structural lag, lower liquidity) occurs on a seconds-to-minutes time scale, which a 1 s loop can genuinely capture.</p>
+              </div>
+              <div className="methodology-col">
+                <h4>Signal Logic</h4>
+                <p><strong>Trigger quantity:</strong> raw z-score of the EUR price spread over a rolling window. Adaptive threshold adjusts for spread volatility. Bitstamp REST volumes are polled at ~1 s intervals rather than streamed tick-by-tick, so volume weighting is not applied — the raw z-score drives both display and trade decisions, keeping the signal definition consistent with the historical backtest.</p>
+              </div>
+              <div className="methodology-col">
+                <h4>FX Conversion</h4>
+                <p>Binance USDT prices are converted to EUR via the ECB rate refreshed every 60 s from api.frankfurter.app. Intraday EUR/USD drift (typically 1–3 bp/hr) represents an unhedged basis risk on each leg.</p>
+              </div>
+            </div>
+          </details>
         </section>
 
         {/* ── Section 3: Charts ───────────────────────────────────── */}
@@ -1873,7 +1332,10 @@ function AppContent() {
               </div>
               <div className="stat-item">
                 <div className="stat-label">Signal State</div>
-                <div className={`stat-value signal-state-${bsdexSignalState.toLowerCase()}`}>{bsdexSignalState}</div>
+                <div className={`stat-value signal-state-${bsdexSignalState.toLowerCase()}`}
+                  title={bsdexSignalGated ? 'Z-score threshold crossed but spread insufficient for fees' : bsdexSignalCooldown ? 'In post-trade cooldown' : ''}>
+                  {bsdexSignalState === 'SIGNAL_GATED' ? 'GATED' : bsdexSignalState === 'SIGNAL_COOLDOWN' ? 'COOLDOWN' : bsdexSignalState}
+                </div>
               </div>
               <div className="stat-item">
                 <div className="stat-label">Cumulative PnL (€)</div>
