@@ -540,25 +540,32 @@ class BSDEXStrategy:
                 z_score   = metrics.zscore
                 threshold = metrics.threshold
 
-        # Signal state — simple: SIGNAL or HOLD (no auction phases for Bitstamp).
-        # If real BSDEX WS is active, its phase info is logged but doesn't block
-        # execution here — that extension can be added later.
-        if z_score is not None and threshold is not None and abs(z_score) >= threshold:
+        # Signal state — raw z-score vs adaptive threshold.
+        # Note: the BSDEX strategy uses raw z-score (not volume-weighted) because
+        # Bitstamp REST volumes are polled infrequently and are not tick-level.
+        # The backtest also uses a simple rolling z-score with no volume weighting,
+        # so the two modes are consistent in their signal definition.
+        # Current fees — must be defined before signal gating logic uses be_pct
+        fee_a  = self._venue_a_taker
+        fee_b  = self._venue_b_taker
+        be_pct = self.breakeven_spread_pct   # (fee_a + fee_b) × 100
+
+        z_triggered  = (z_score is not None and threshold is not None and abs(z_score) >= threshold)
+        spread_ok    = abs(spread_pct) > be_pct
+        cooldown_ok  = (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
+
+        if z_triggered and spread_ok and cooldown_ok:
             signal_state = "SIGNAL"
+        elif z_triggered and not spread_ok:
+            # z-score threshold crossed but spread doesn't cover fees — do NOT trade
+            signal_state = "SIGNAL_GATED"   # visible to UI: signal active, spread too thin
+        elif z_triggered and not cooldown_ok:
+            signal_state = "SIGNAL_COOLDOWN"
         else:
             signal_state = "HOLD"
 
-        # Current fees from stored rates
-        fee_a = self._venue_a_taker
-        fee_b = self._venue_b_taker
-        be_pct = self.breakeven_spread_pct   # (fee_a + fee_b) * 100
-
         # Trade conditions
-        should_trade = (
-            signal_state == "SIGNAL"
-            and abs(spread_pct) > be_pct
-            and (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
-        )
+        should_trade = signal_state == "SIGNAL"
 
         trade_data = None
         if should_trade:
