@@ -34,7 +34,7 @@ from src.crypto_hft_tool.fee_manager import FeeManager
 from src.crypto_hft_tool.fee_tiers import list_presets, get_preset
 from src.crypto_hft_tool.backtest import Backtester
 from src.crypto_hft_tool.bsdex_strategy import bsdex_strategy
-from src.crypto_hft_tool.config import BSDEX_MARKETS, BSDEX_FEE_PRESETS
+from src.crypto_hft_tool.config import BSDEX_MARKETS, BSDEX_FEE_PRESETS, BSDEX_VOLUME_TIERS
 import concurrent.futures
 
 # Configure logging once for the entire application
@@ -754,6 +754,16 @@ class BSDEXFeePresetRequest(BaseModel):
     preset: str
 
 
+class BSDEXConfigRequest(BaseModel):
+    """Full BSDEX tab configuration payload — all fields optional for partial updates."""
+    venue_a_taker: Optional[float] = None   # Bitstamp taker fee (decimal; 0.0012 = 0.12%)
+    venue_b_taker: Optional[float] = None   # LMAX taker fee (decimal)
+    tier_label:    Optional[str]   = None   # display label e.g. "> $5M"
+    tier_idx:      Optional[int]   = None   # index into BSDEX_VOLUME_TIERS
+    fee_mode:      Optional[str]   = None   # "auto" | "manual"
+    capital_eur:   Optional[float] = None   # capital per leg in EUR
+
+
 @app.get("/api/v1/bsdex/status")
 async def bsdex_status():
     """PnL, total trades, win rate, total fees, FX rate, active preset."""
@@ -788,48 +798,131 @@ async def bsdex_spread_series(
     return bsdex_strategy.get_spread_series(market, n=min(n, 500))
 
 
+@app.get("/api/v1/bsdex/volume_tiers")
+async def bsdex_list_volume_tiers():
+    """All volume-based fee tiers (Bitstamp + LMAX taker fees) for the UI dropdown."""
+    active_idx = bsdex_strategy._tier_idx
+    result = []
+    for idx, tier in enumerate(BSDEX_VOLUME_TIERS):
+        result.append({
+            **tier,
+            "idx":              idx,
+            "bitstamp_taker_pct": round(tier["bitstamp_taker"] * 100, 4),
+            "lmax_taker_pct":     round(tier["lmax_taker"] * 100, 4),
+            "breakeven_pct":      round((tier["bitstamp_taker"] + tier["lmax_taker"]) * 100, 4),
+            "active":             idx == active_idx,
+        })
+    return result
+
+
+@app.post("/api/v1/bsdex/config")
+async def bsdex_set_config(req: BSDEXConfigRequest):
+    """
+    Update BSDEX tab config: fees (from volume tier or manual) and/or capital.
+    Partial updates are supported — only the provided fields are applied.
+    """
+    changed = {}
+
+    # Apply fee update if provided
+    if req.venue_a_taker is not None or req.venue_b_taker is not None:
+        new_a   = req.venue_a_taker   if req.venue_a_taker   is not None else bsdex_strategy._venue_a_taker
+        new_b   = req.venue_b_taker   if req.venue_b_taker   is not None else bsdex_strategy._venue_b_taker
+        label   = req.tier_label      if req.tier_label       is not None else bsdex_strategy._tier_label
+        idx     = req.tier_idx        if req.tier_idx         is not None else bsdex_strategy._tier_idx
+        mode    = req.fee_mode        if req.fee_mode         is not None else bsdex_strategy._fee_mode
+        bsdex_strategy.set_fees(new_a, new_b, tier_label=label, tier_idx=idx, mode=mode)
+        changed["fees"] = {
+            "venue_a_taker_pct": round(new_a * 100, 4),
+            "venue_b_taker_pct": round(new_b * 100, 4),
+            "breakeven_pct":     round((new_a + new_b) * 100, 4),
+            "tier_label": label, "mode": mode,
+        }
+
+    # Apply capital update if provided
+    if req.capital_eur is not None:
+        bsdex_strategy.set_capital(req.capital_eur)
+        changed["capital_eur"] = req.capital_eur
+
+    if not changed:
+        return {"success": False, "detail": "No fields provided."}
+
+    return {"success": True, "applied": changed, "status": bsdex_strategy.get_status()}
+
+
+# Legacy preset endpoint — kept for backward compat; redirects to new fee logic
 @app.post("/api/v1/bsdex/fee_preset")
 async def bsdex_set_fee_preset(req: BSDEXFeePresetRequest):
-    """Change the active fee preset; recomputes displayed PnL on next tick."""
-    if req.preset not in BSDEX_FEE_PRESETS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown preset '{req.preset}'. Available: {list(BSDEX_FEE_PRESETS.keys())}"
-        )
     ok = bsdex_strategy.set_fee_preset(req.preset)
-    return {"success": ok, "active_preset": bsdex_strategy._preset_name}
+    return {"success": ok, "active_tier": bsdex_strategy._tier_label}
 
 
+# Legacy phase endpoint — Bitstamp has no phases; returns a stable no-op response
 @app.get("/api/v1/bsdex/phase/{market}")
 async def bsdex_phase(market: str = Path(..., description="e.g. btc-eur")):
-    """Current phase + last auction-transition timestamp for chart markers."""
-    if market not in BSDEX_MARKETS:
-        raise HTTPException(status_code=404, detail=f"Unknown market '{market}'. Available: {BSDEX_MARKETS}")
-    phase = bsdex_strategy.get_phase(market)
-    return {"market": market, **phase}
+    return {"market": market, "name": "continuous-trading",
+            "note": "Bitstamp proxy has no auction phases."}
 
 
+# Legacy preset list — redirects callers to volume_tiers
 @app.get("/api/v1/bsdex/fee_presets")
 async def bsdex_list_fee_presets():
-    """List all available BSDEX fee presets with their rates."""
-    from src.crypto_hft_tool.config import BSDEX_STRATEGY_FEES
-    result = {}
-    for preset_name, preset in BSDEX_FEE_PRESETS.items():
-        bsdex_key = preset["bsdex"]
-        world_key = preset["world"]
-        bsdex_fees = BSDEX_STRATEGY_FEES[bsdex_key]
-        world_fees = BSDEX_STRATEGY_FEES[world_key]
-        combined_taker = bsdex_fees["taker"] + world_fees["taker"]
-        result[preset_name] = {
-            "bsdex_fee_key": bsdex_key,
-            "world_fee_key": world_key,
-            "bsdex_taker_pct": round(bsdex_fees["taker"] * 100, 4),
-            "world_taker_pct": round(world_fees["taker"] * 100, 4),
-            "combined_taker_pct": round(combined_taker * 100, 4),
-            "breakeven_spread_pct": round(combined_taker * 100, 4),
-            "is_institutional_assumption": "institutional" in bsdex_key,
-            "active": preset_name == bsdex_strategy._preset_name,
-        }
+    return {"deprecated": True,
+            "message": "Use GET /api/v1/bsdex/volume_tiers instead.",
+            "redirect": "/api/v1/bsdex/volume_tiers"}
+
+
+# ---------------------------------------------------------------------------
+# BSDEX Historical Backtest
+# ---------------------------------------------------------------------------
+
+class BSDEXBacktestRequest(BaseModel):
+    symbol:         str   = "btc-eur"    # "btc-eur" | "eth-eur"
+    start_dt:       str                  # ISO-8601, e.g. "2026-05-01T00:00:00Z"
+    end_dt:         str                  # ISO-8601
+    venue_a_taker:  float = 0.0012       # Bitstamp taker (decimal)
+    venue_b_taker:  float = 0.0006       # LMAX/Binance taker (decimal)
+    capital_eur:    float = 1000.0       # EUR per leg per trade
+    tier_label:     str   = "custom"
+
+
+@app.post("/api/v1/bsdex/historical_backtest")
+async def bsdex_historical_backtest(req: BSDEXBacktestRequest):
+    """
+    Fetch real 1-minute OHLCV from Bitstamp (EUR) + Binance (USDT→EUR),
+    run the spread/z-score arbitrage strategy, and return:
+      summary, equity_curve, spread_series, trades
+    
+    Max range: 7 days.  All prices in EUR.  No synthetic data.
+    """
+    from src.crypto_hft_tool.bsdex_historical_bt import run_historical_backtest
+
+    if req.symbol not in ("btc-eur", "eth-eur"):
+        raise HTTPException(status_code=422, detail="symbol must be 'btc-eur' or 'eth-eur'")
+
+    try:
+        start_dt = datetime.fromisoformat(req.start_dt.replace("Z", "+00:00"))
+        end_dt   = datetime.fromisoformat(req.end_dt.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {e}")
+
+    try:
+        result = await run_historical_backtest(
+            symbol=req.symbol,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            venue_a_taker=req.venue_a_taker,
+            venue_b_taker=req.venue_b_taker,
+            capital_eur=req.capital_eur,
+            tier_label=req.tier_label,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"[BT] Unexpected error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {e}")
+
     return result
 
 
