@@ -212,33 +212,98 @@ BSDEX_BITSTAMP_MAP = {        # BSDEX market -> Bitstamp ticker (EUR fallback)
 FX_RATE_SOURCE   = "https://api.frankfurter.app/latest?from=USD&to=EUR"
 FX_REFRESH_SEC   = 60          # Re-fetch FX rate every 60 s
 
-# Active fee preset for the BSDEX tab (can be changed at runtime via API).
-BSDEX_ACTIVE_FEE_PRESET = "retail_demo"
-
 # BSDEX API credentials (optional — enables real BSDEX data instead of Bitstamp proxy).
 BSDEX_CREDENTIALS = {
     "apiKey": os.getenv("BSDEX_API_KEY", ""),
     "secret": os.getenv("BSDEX_API_SECRET", ""),
 }
 
-# Fee schedules for the BSDEX vs World strategy (decimals; 0.0020 = 0.20 %).
-# BSDEX retail: published at bsdex.de/en/fees (verified 2025).
-# BSDEX institutional: negotiated — NOT publicly confirmed; labelled ASSUMPTION.
-# LMAX Digital: public reviews suggest 0-2 bps maker / 3-6 bps taker; confirm before live use.
-BSDEX_STRATEGY_FEES = {
-    "bsdex_retail":        {"maker": 0.0020, "taker": 0.0035},
-    "bsdex_institutional": {"maker": 0.0010, "taker": 0.0015},  # ASSUMPTION — label as such
-    "lmax_low":            {"maker": 0.0000, "taker": 0.0003},  # 0 bps / 3 bps
-    "lmax_high":           {"maker": 0.0002, "taker": 0.0006},  # 2 bps / 6 bps
-}
+# ---------------------------------------------------------------------------
+# Volume-based fee tiers for the BSDEX vs World tab.
+# Source: institutional taker fee comparison table (LMAX Digital vs Bitstamp),
+#         verified June 2026.  All values in decimal form (0.0012 = 0.12 %).
+#
+# Venue A = Bitstamp (EUR order book, BSDEX proxy)
+# Venue B = LMAX Digital (institutional world price, fee model only)
+#
+# The "Retail (< $5M)" row is the standard Bitstamp account tier;
+# LMAX Digital is institutional-only, so its entry fee (0.06%) is shown there.
+# ---------------------------------------------------------------------------
+BSDEX_VOLUME_TIERS: list = [
+    {
+        "label":           "Retail (< $5M)",
+        "min_vol_usd_m":   0,
+        "bitstamp_taker":  0.0040,   # 0.40 % — standard Bitstamp account
+        "lmax_taker":      0.0006,   # 0.06 % — LMAX entry institutional
+        "note":            "Standard retail Bitstamp account; LMAX is institutional-only.",
+    },
+    {
+        "label":           "> $5M",
+        "min_vol_usd_m":   5,
+        "bitstamp_taker":  0.0012,   # 0.12 %
+        "lmax_taker":      0.0006,   # 0.06 %
+        "note":            "",
+    },
+    {
+        "label":           "> $20M",
+        "min_vol_usd_m":   20,
+        "bitstamp_taker":  0.0010,   # 0.10 %
+        "lmax_taker":      0.0006,   # 0.06 %
+        "note":            "",
+    },
+    {
+        "label":           "> $50M",
+        "min_vol_usd_m":   50,
+        "bitstamp_taker":  0.0008,   # 0.08 %
+        "lmax_taker":      0.0006,   # 0.06 %
+        "note":            "",
+    },
+    {
+        "label":           "> $100M",
+        "min_vol_usd_m":   100,
+        "bitstamp_taker":  0.0006,   # 0.06 %
+        "lmax_taker":      0.0004,   # 0.04 %
+        "note":            "",
+    },
+    {
+        "label":           "> $200M",
+        "min_vol_usd_m":   200,
+        "bitstamp_taker":  0.0006,   # 0.06 %
+        "lmax_taker":      0.0003,   # 0.03 %
+        "note":            "",
+    },
+    {
+        "label":           "> $250M",
+        "min_vol_usd_m":   250,
+        "bitstamp_taker":  0.0005,   # 0.05 %
+        "lmax_taker":      0.0003,   # 0.03 %
+        "note":            "",
+    },
+    {
+        "label":           "> $1B",
+        "min_vol_usd_m":   1000,
+        "bitstamp_taker":  0.0003,   # 0.03 %
+        "lmax_taker":      0.0003,   # 0.03 %
+        "note":            "",
+    },
+]
 
-# Selectable combined presets for the BSDEX tab fee dropdown.
-# Each preset: {bsdex: <fee key>, world: <fee key>}
+# Default startup tier index (0 = Retail)
+BSDEX_DEFAULT_TIER_IDX: int = 1   # "> $5M" as the default starting point
+
+# Legacy fee presets kept for bsdex_backtest.py backward compatibility.
+BSDEX_STRATEGY_FEES = {
+    "bsdex_retail":        {"maker": 0.0020, "taker": 0.0040},
+    "bsdex_institutional": {"maker": 0.0010, "taker": 0.0012},
+    "lmax_low":            {"maker": 0.0002, "taker": 0.0003},
+    "lmax_high":           {"maker": 0.0002, "taker": 0.0006},
+}
 BSDEX_FEE_PRESETS = {
     "retail_demo":        {"bsdex": "bsdex_retail",        "world": "lmax_high"},
     "institutional_best": {"bsdex": "bsdex_institutional", "world": "lmax_low"},
     "institutional_mid":  {"bsdex": "bsdex_institutional", "world": "lmax_high"},
 }
+BSDEX_ACTIVE_FEE_PRESET = "retail_demo"  # legacy — UI now uses volume tiers
 
 # =============================================================================
 # Risk Management Settings

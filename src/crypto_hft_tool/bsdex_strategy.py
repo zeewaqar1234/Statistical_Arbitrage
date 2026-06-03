@@ -59,9 +59,10 @@ from .config import (
     BSDEX_MARKET_MAP,
     BSDEX_MARKETS,
     BSDEX_BITSTAMP_MAP,
-    BSDEX_STRATEGY_FEES,
     BSDEX_FEE_PRESETS,
-    BSDEX_ACTIVE_FEE_PRESET,
+    BSDEX_STRATEGY_FEES,
+    BSDEX_VOLUME_TIERS,
+    BSDEX_DEFAULT_TIER_IDX,
     FX_RATE_SOURCE,
     FX_REFRESH_SEC,
     ENHANCED_SIGNAL_SETTINGS,
@@ -349,15 +350,27 @@ class BSDEXStrategy:
     Binance/Kraken trading_loop in main.py.
 
     Venue A  = BSDEX (authenticated WS) or Bitstamp (public REST fallback).
-               Prices in EUR. Fees = BSDEX schedule.
+               Prices in EUR. Fees = Bitstamp fee schedule (volume-tier based).
     Venue B  = "World" — Binance USDT price converted to EUR via live FX rate.
-               Fees = LMAX Digital schedule (clearly labelled assumption).
+               Fees = LMAX Digital fee schedule (volume-tier based, labelled assumption).
+
+    Phase/auction logic is intentionally absent: Bitstamp has no auction phases
+    and we run in continuous-trading mode only. When real BSDEX auth keys are
+    provided (BSDEX_API_KEY / BSDEX_API_SECRET in .env) the WS provider connects
+    and delivers live BSDEX quotes + phases, which re-activates phase logic.
     """
 
     def __init__(self):
-        # --- fee preset -------------------------------------------------------
-        self._preset_name: str = BSDEX_ACTIVE_FEE_PRESET
-        self._preset: dict     = BSDEX_FEE_PRESETS[self._preset_name]
+        # --- fee rates stored directly (decimal; e.g. 0.0012 = 0.12 %) ----------
+        _default_tier = BSDEX_VOLUME_TIERS[BSDEX_DEFAULT_TIER_IDX]
+        self._venue_a_taker: float = _default_tier["bitstamp_taker"]
+        self._venue_b_taker: float = _default_tier["lmax_taker"]
+        self._tier_label:    str   = _default_tier["label"]
+        self._tier_idx:      int   = BSDEX_DEFAULT_TIER_IDX
+        self._fee_mode:      str   = "auto"   # "auto" (tier-based) | "manual"
+
+        # --- capital (EUR per leg) --------------------------------------------
+        self._capital_eur: float = float(STRATEGY_DEFAULTS.get("capital_per_leg_usdt", 1000.0))
 
         # --- own simulator instance -------------------------------------------
         self.simulator = TradeSimulator()
@@ -377,20 +390,15 @@ class BSDEXStrategy:
 
         # --- per-market state -------------------------------------------------
         self.last_trade_time: Dict[str, float] = {m: 0.0 for m in BSDEX_MARKETS}
-        # Phase tracking: detect auction→continuous edge
-        self._last_phase: Dict[str, str] = {m: PHASE_CONTINUOUS for m in BSDEX_MARKETS}
-        self._armed: Dict[str, bool] = {m: False for m in BSDEX_MARKETS}
-        # rolling spread buffer: market -> deque of dicts
         self._spread_buf: Dict[str, deque] = {
             m: deque(maxlen=SPREAD_BUFFER_SIZE) for m in BSDEX_MARKETS
         }
-        # latest computed tick per market
         self.latest: Dict[str, dict] = {}
 
         # --- FX rate cache ----------------------------------------------------
         self.fx_cache = FXRateCache()
 
-        # --- BSDEX WS provider (created if keys available) -------------------
+        # --- BSDEX WS provider (created only if API keys are present) --------
         self._bsdex_ws: Optional[BSDEXWebSocketProvider] = None
         self._use_real_bsdex = bool(
             BSDEX_CREDENTIALS.get("apiKey") and BSDEX_CREDENTIALS.get("secret")
@@ -404,21 +412,15 @@ class BSDEXStrategy:
             logger.info("[BSDEX] Authenticated WS provider initialised (real BSDEX data).")
         else:
             logger.info(
-                "[BSDEX] No BSDEX API keys found — using Bitstamp EUR as venue-A proxy. "
-                "Set BSDEX_API_KEY + BSDEX_API_SECRET in .env for real BSDEX data."
+                "[BSDEX] No BSDEX API keys — using Bitstamp EUR as venue-A proxy "
+                "(continuous trading only, no auction phases). "
+                "Set BSDEX_API_KEY + BSDEX_API_SECRET in .env for live BSDEX data."
             )
-
-        # Phase simulation for Bitstamp mode (no real phases available)
-        # We treat Bitstamp as always "continuous-trading".
-        self._bitstamp_phases: Dict[str, dict] = {
-            m: {"name": PHASE_CONTINUOUS, "start_ts": None, "changed_at": None}
-            for m in BSDEX_MARKETS
-        }
 
         self._running = False
 
     # ------------------------------------------------------------------
-    # Public properties / helpers
+    # Public properties
     # ------------------------------------------------------------------
 
     @property
@@ -433,37 +435,52 @@ class BSDEXStrategy:
     def data_source(self) -> str:
         return "bsdex_ws" if self._use_real_bsdex else "bitstamp_rest"
 
+    @property
+    def breakeven_spread_pct(self) -> float:
+        return (self._venue_a_taker + self._venue_b_taker) * 100
+
+    # ------------------------------------------------------------------
+    # Runtime config setters
+    # ------------------------------------------------------------------
+
+    def set_fees(
+        self,
+        venue_a_taker: float,
+        venue_b_taker: float,
+        tier_label: str = "manual",
+        tier_idx: int = -1,
+        mode: str = "manual",
+    ) -> None:
+        """Set fee rates directly (from volume-tier selection or manual entry)."""
+        self._venue_a_taker = max(0.0, venue_a_taker)
+        self._venue_b_taker = max(0.0, venue_b_taker)
+        self._tier_label    = tier_label
+        self._tier_idx      = tier_idx
+        self._fee_mode      = mode
+        logger.info(
+            f"[BSDEX] Fees updated: A={venue_a_taker:.4%} B={venue_b_taker:.4%} "
+            f"tier='{tier_label}' mode={mode}"
+        )
+
+    def set_capital(self, capital_eur: float) -> None:
+        """Set capital deployed per venue per trade (EUR)."""
+        if capital_eur > 0:
+            self._capital_eur = capital_eur
+            logger.info(f"[BSDEX] Capital updated: €{capital_eur:,.2f}")
+
+    # Legacy preset setter (kept for backward compat with old API route)
     def set_fee_preset(self, preset_name: str) -> bool:
+        from .config import BSDEX_STRATEGY_FEES
         if preset_name not in BSDEX_FEE_PRESETS:
             return False
-        self._preset_name = preset_name
-        self._preset = BSDEX_FEE_PRESETS[preset_name]
-        logger.info(f"[BSDEX] Fee preset changed to '{preset_name}'")
+        preset = BSDEX_FEE_PRESETS[preset_name]
+        self.set_fees(
+            venue_a_taker=BSDEX_STRATEGY_FEES[preset["bsdex"]]["taker"],
+            venue_b_taker=BSDEX_STRATEGY_FEES[preset["world"]]["taker"],
+            tier_label=preset_name,
+            mode="auto",
+        )
         return True
-
-    def _get_fees(self, side: str) -> Tuple[float, float]:
-        """Return (venue_a_fee_rate, venue_b_fee_rate) for the given side (maker/taker)."""
-        bsdex_fees = BSDEX_STRATEGY_FEES[self._preset["bsdex"]]
-        world_fees = BSDEX_STRATEGY_FEES[self._preset["world"]]
-        return bsdex_fees[side], world_fees[side]
-
-    def _get_capital(self) -> float:
-        return STRATEGY_DEFAULTS.get("capital_per_leg_usdt", 1000.0)
-
-    # ------------------------------------------------------------------
-    # Phase helpers
-    # ------------------------------------------------------------------
-
-    def _get_phase(self, market: str) -> dict:
-        if self._use_real_bsdex and self._bsdex_ws:
-            return self._bsdex_ws.get_phase(market)
-        return self._bitstamp_phases[market]
-
-    def _is_tradeable(self, phase_name: str) -> bool:
-        return phase_name == PHASE_CONTINUOUS
-
-    def _is_auction(self, phase_name: str) -> bool:
-        return phase_name in AUCTION_PHASES
 
     # ------------------------------------------------------------------
     # Venue-A quote
@@ -476,24 +493,22 @@ class BSDEXStrategy:
                 q = dict(q)
                 q["exchange"] = "bsdex"
                 return q
-            # WS might not have data yet — don't fall through to Bitstamp
             return None
-        else:
-            bitstamp_ticker = BSDEX_BITSTAMP_MAP.get(market)
-            if not bitstamp_ticker:
-                return None
-            q = await _fetch_bitstamp_quote(bitstamp_ticker)
-            if q:
-                q["exchange"] = "bitstamp_proxy"
-                q["symbol"] = market
-            return q
+        bitstamp_ticker = BSDEX_BITSTAMP_MAP.get(market)
+        if not bitstamp_ticker:
+            return None
+        q = await _fetch_bitstamp_quote(bitstamp_ticker)
+        if q:
+            q["exchange"] = "bitstamp_proxy"
+            q["symbol"] = market
+        return q
 
     # ------------------------------------------------------------------
     # Core tick processing
     # ------------------------------------------------------------------
 
     async def _process_market(self, market: str):
-        """One tick for a single market: fetch prices, compute spread, maybe trade."""
+        """One tick: fetch prices, compute spread, signal, maybe simulate a trade."""
         fx_rate = await self.fx_cache.maybe_refresh()
 
         world_symbol = BSDEX_MARKET_MAP[market]
@@ -501,92 +516,66 @@ class BSDEXStrategy:
         venue_b_q = await _fetch_binance_quote_eur(world_symbol, fx_rate)
 
         if not venue_a_q or not venue_b_q:
-            return  # data unavailable — skip tick
+            return
 
         a_bid = venue_a_q["bid"]
         a_ask = venue_a_q["ask"]
         b_bid = venue_b_q["bid"]
         b_ask = venue_b_q["ask"]
 
-        # Spread: BSDEX (A) bid minus world (B) ask — positive means A trades above B.
+        # Spread: Venue A bid − Venue B ask.  Positive → A expensive (sell A, buy B).
         spread_eur = a_bid - b_ask
-        mid_a = venue_a_q["mid_price"]
-        mid_b = venue_b_q["mid_price"]
+        mid_b      = venue_b_q["mid_price"]
         spread_pct = (spread_eur / mid_b * 100) if mid_b > 0 else 0.0
 
-        # Feed into signal processor
-        volume = venue_a_q.get("baseVolume", 0)
-        now_ts = datetime.now(timezone.utc)
+        # Signal engine
+        volume     = venue_a_q.get("baseVolume", 0)
+        now_ts     = datetime.now(timezone.utc)
         signal_map = self.signal_processors[market].update(spread_eur, volume, now_ts)
 
-        # Compute z-score (use longest window available)
-        z_score: Optional[float] = None
+        z_score: Optional[float]   = None
         threshold: Optional[float] = None
-        for window, metrics in (signal_map or {}).items():
+        for _, metrics in (signal_map or {}).items():
             if metrics and metrics.zscore is not None:
-                z_score = metrics.zscore
+                z_score   = metrics.zscore
                 threshold = metrics.threshold
 
-        # Phase logic
-        phase_info = self._get_phase(market)
-        phase_name = phase_info.get("name", PHASE_CONTINUOUS)
-
-        # Detect auction→continuous edge
-        prev_phase = self._last_phase[market]
-        post_auction = False
-        if self._is_auction(prev_phase) and self._is_tradeable(phase_name):
-            post_auction = True
-            logger.info(f"[BSDEX] {market}: auction ended → continuous (armed signal: {self._armed[market]})")
-        if self._is_auction(phase_name):
-            self._armed[market] = True   # signal is building during auction
-        if self._is_tradeable(phase_name) and not self._is_auction(prev_phase):
-            # already in continuous — arm state only resets after a trade or timeout
-            pass
-        self._last_phase[market] = phase_name
-
-        # Determine signal state
-        if not self._is_tradeable(phase_name) and not self._is_auction(phase_name):
-            signal_state = "BLOCKED_BY_PHASE"
-        elif self._is_auction(phase_name):
-            signal_state = "ARMING"
-        elif z_score is not None and threshold is not None and abs(z_score) >= threshold:
+        # Signal state — simple: SIGNAL or HOLD (no auction phases for Bitstamp).
+        # If real BSDEX WS is active, its phase info is logged but doesn't block
+        # execution here — that extension can be added later.
+        if z_score is not None and threshold is not None and abs(z_score) >= threshold:
             signal_state = "SIGNAL"
         else:
             signal_state = "HOLD"
 
-        # Compute fees (taker on both sides for arbitrage)
-        fee_a, fee_b = self._get_fees("taker")
-        breakeven_spread_pct = (fee_a + fee_b) * 100
+        # Current fees from stored rates
+        fee_a = self._venue_a_taker
+        fee_b = self._venue_b_taker
+        be_pct = self.breakeven_spread_pct   # (fee_a + fee_b) * 100
 
         # Trade conditions
         should_trade = (
-            self._is_tradeable(phase_name)
-            and signal_state == "SIGNAL"
+            signal_state == "SIGNAL"
+            and abs(spread_pct) > be_pct
             and (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
         )
 
-        # Direction: if spread_eur > 0 → A is expensive vs B → buy B, sell A
         trade_data = None
-        if should_trade and abs(spread_pct) > breakeven_spread_pct:
-            capital = self._get_capital()
+        if should_trade:
             if spread_eur > 0:
-                # Buy world (B), Sell BSDEX (A)
-                buy_price  = b_ask
-                sell_price = a_bid
-                buy_ex, sell_ex = "world_lmax", "bsdex"
-                buy_fee, sell_fee = fee_b, fee_a
+                buy_price, sell_price = b_ask, a_bid
+                buy_ex,    sell_ex    = "world_lmax", "bitstamp"
+                buy_fee,   sell_fee   = fee_b, fee_a
             else:
-                # Buy BSDEX (A), Sell world (B)
-                buy_price  = a_ask
-                sell_price = b_bid
-                buy_ex, sell_ex = "bsdex", "world_lmax"
-                buy_fee, sell_fee = fee_a, fee_b
+                buy_price, sell_price = a_ask, b_bid
+                buy_ex,    sell_ex    = "bitstamp", "world_lmax"
+                buy_fee,   sell_fee   = fee_a, fee_b
 
             if buy_price > 0 and sell_price > 0:
-                amount = capital / buy_price
                 eff_sell = sell_price * (1 - sell_fee)
                 eff_buy  = buy_price  * (1 + buy_fee)
                 if eff_sell > eff_buy:
+                    amount = self._capital_eur / buy_price
                     pnl, fees_paid = self.simulator.simulate_arbitrage_trade(
                         symbol=market,
                         amount=amount,
@@ -598,14 +587,11 @@ class BSDEXStrategy:
                         sell_fee_rate=sell_fee,
                     )
                     self.last_trade_time[market] = time.time()
-                    self._armed[market] = False
                     trade_data = {
-                        "pnl": pnl,
-                        "fees": fees_paid,
-                        "post_auction_convergence": post_auction or self._armed.get(market, False),
-                        "fee_preset": self._preset_name,
+                        "pnl": pnl, "fees": fees_paid,
+                        "tier": self._tier_label,
+                        "fee_mode": self._fee_mode,
                         "fx_rate": fx_rate,
-                        "phase": phase_name,
                         "amount": amount,
                         "buy_exchange": buy_ex,
                         "sell_exchange": sell_ex,
@@ -614,35 +600,35 @@ class BSDEXStrategy:
                     }
                     logger.info(
                         f"[BSDEX] Trade {market}: {amount:.6f} BUY@{buy_price:.2f} ({buy_ex}), "
-                        f"SELL@{sell_price:.2f} ({sell_ex}), PnL={pnl:.4f} EUR, "
-                        f"post_auction={trade_data['post_auction_convergence']}"
+                        f"SELL@{sell_price:.2f} ({sell_ex}), PnL=€{pnl:.4f} | "
+                        f"tier={self._tier_label} feeA={fee_a:.4%} feeB={fee_b:.4%}"
                     )
 
-        # Store in rolling spread buffer
+        # Rolling spread buffer
         tick = {
-            "ts": now_ts.isoformat(),
-            "spread_eur": round(spread_eur, 4),
-            "spread_pct": round(spread_pct, 6),
-            "z_score": round(z_score, 4) if z_score is not None else None,
-            "threshold": round(threshold, 4) if threshold is not None else None,
-            "phase": phase_name,
+            "ts":          now_ts.isoformat(),
+            "spread_eur":  round(spread_eur, 4),
+            "spread_pct":  round(spread_pct, 6),
+            "z_score":     round(z_score, 4)   if z_score   is not None else None,
+            "threshold":   round(threshold, 4) if threshold is not None else None,
             "signal_state": signal_state,
-            "a_bid": round(a_bid, 4),
-            "a_ask": round(a_ask, 4),
-            "b_bid": round(b_bid, 4),
-            "b_ask": round(b_ask, 4),
-            "fx_rate": round(fx_rate, 6),
-            "trade": trade_data,
+            "a_bid":       round(a_bid, 4),
+            "a_ask":       round(a_ask, 4),
+            "b_bid":       round(b_bid, 4),
+            "b_ask":       round(b_ask, 4),
+            "fx_rate":     round(fx_rate, 6),
+            "trade":       trade_data,
         }
         self._spread_buf[market].append(tick)
 
-        # Update latest tick
         self.latest[market] = {
             **tick,
-            "venue_a_source": venue_a_q.get("source", self.data_source),
-            "venue_b_source": venue_b_q.get("source", "binance_usdt_eur"),
-            "breakeven_spread_pct": round(breakeven_spread_pct, 6),
-            "fee_preset": self._preset_name,
+            "venue_a_source":      venue_a_q.get("source", self.data_source),
+            "venue_b_source":      venue_b_q.get("source", "binance_usdt_eur"),
+            "breakeven_spread_pct": round(be_pct, 6),
+            "venue_a_taker_pct":   round(fee_a * 100, 4),
+            "venue_b_taker_pct":   round(fee_b * 100, 4),
+            "tier_label":          self._tier_label,
         }
 
     # ------------------------------------------------------------------
@@ -676,62 +662,68 @@ class BSDEXStrategy:
     # ------------------------------------------------------------------
 
     def get_status(self) -> dict:
-        """PnL summary — mirrors main.py's _compute_performance_metrics shape."""
-        trades = self.simulator.trades
-        n = len(trades)
-        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
-        total_pnl = self.simulator.total_pnl
+        """Session summary including current fee config."""
+        trades     = self.simulator.trades
+        n          = len(trades)
+        wins       = sum(1 for t in trades if t.get("pnl", 0) > 0)
+        total_pnl  = self.simulator.total_pnl
         total_fees = self.simulator.total_fees_paid
-        win_rate = (wins / n * 100) if n > 0 else 0.0
-        fx_rate = self.fx_cache.rate
+        win_rate   = (wins / n * 100) if n > 0 else 0.0
+        fx_rate    = self.fx_cache.rate
         return {
-            "total_pnl_eur": round(total_pnl, 4),
-            "total_trades": n,
-            "win_rate_pct": round(win_rate, 2),
-            "total_fees_eur": round(total_fees, 4),
-            "fee_preset": self._preset_name,
-            "fx_rate_usd_eur": round(fx_rate, 6),
-            "fx_age_sec": round(self.fx_cache.age_sec, 1),
-            "venue_a": self.venue_a_label,
-            "venue_b": self.venue_b_label,
-            "data_source": self.data_source,
+            "total_pnl_eur":       round(total_pnl, 4),
+            "total_trades":        n,
+            "win_rate_pct":        round(win_rate, 2),
+            "total_fees_eur":      round(total_fees, 4),
+            "fx_rate_usd_eur":     round(fx_rate, 6),
+            "fx_age_sec":          round(self.fx_cache.age_sec, 1),
+            "venue_a":             self.venue_a_label,
+            "venue_b":             self.venue_b_label,
+            "data_source":         self.data_source,
+            # fee config
+            "venue_a_taker_pct":   round(self._venue_a_taker * 100, 4),
+            "venue_b_taker_pct":   round(self._venue_b_taker * 100, 4),
+            "combined_taker_pct":  round(self.breakeven_spread_pct, 4),
+            "breakeven_spread_pct": round(self.breakeven_spread_pct, 4),
+            "tier_label":          self._tier_label,
+            "tier_idx":            self._tier_idx,
+            "fee_mode":            self._fee_mode,
+            "capital_eur":         self._capital_eur,
         }
 
     def get_recent_trades(self, limit: int = 50) -> List[dict]:
-        """Return the most recent simulated trades with BSDEX-specific fields."""
-        raw = self.simulator.trades[-limit:]
+        """Return the most recent simulated trades."""
+        raw    = self.simulator.trades[-limit:]
         result = []
         for t in reversed(raw):
-            ts = t.get("timestamp")
+            ts     = t.get("timestamp")
             ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             result.append({
-                "timestamp": ts_str,
-                "market": t.get("symbol"),
-                "buy_exchange": t.get("buy_exchange"),
-                "sell_exchange": t.get("sell_exchange"),
-                "buy_price_eur": round(t.get("buy_price", 0), 4),
+                "timestamp":      ts_str,
+                "market":         t.get("symbol"),
+                "buy_exchange":   t.get("buy_exchange"),
+                "sell_exchange":  t.get("sell_exchange"),
+                "buy_price_eur":  round(t.get("buy_price", 0), 4),
                 "sell_price_eur": round(t.get("sell_price", 0), 4),
-                "amount": round(t.get("amount", 0), 8),
-                "pnl_eur": round(t.get("pnl", 0), 4),
-                "fees_eur": round(t.get("fees", 0), 4),
-                "phase": t.get("phase", "unknown"),
-                "post_auction_convergence": t.get("post_auction_convergence", False),
-                "fee_preset": t.get("fee_preset", self._preset_name),
-                "fx_rate": t.get("fx_rate", self.fx_cache.rate),
+                "amount":         round(t.get("amount", 0), 8),
+                "pnl_eur":        round(t.get("pnl", 0), 4),
+                "fees_eur":       round(t.get("fees", 0), 4),
+                "tier":           t.get("tier", self._tier_label),
+                "fx_rate":        t.get("fx_rate", self.fx_cache.rate),
             })
         return result
 
     def get_latest_market(self, market: str) -> Optional[dict]:
-        """Latest spread / z / phase for the chart endpoint."""
+        """Latest spread / z-score tick for chart polling."""
         return self.latest.get(market)
 
     def get_spread_series(self, market: str, n: int = 200) -> List[dict]:
         """Last n ticks from the rolling spread buffer."""
-        buf = list(self._spread_buf.get(market, []))
-        return buf[-n:]
+        return list(self._spread_buf.get(market, []))[-n:]
 
+    # Legacy — kept so the old API route doesn't 500
     def get_phase(self, market: str) -> dict:
-        return self._get_phase(market)
+        return {"name": "continuous-trading", "note": "Bitstamp has no auction phases."}
 
 
 # ---------------------------------------------------------------------------
