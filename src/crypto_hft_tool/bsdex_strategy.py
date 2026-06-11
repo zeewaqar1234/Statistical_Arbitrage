@@ -74,6 +74,18 @@ from .simulation import TradeSimulator
 
 logger = logging.getLogger(__name__)
 
+
+def _system_dns_connector() -> aiohttp.TCPConnector:
+    """
+    Use the OS/system resolver instead of aiohttp's async resolver.
+
+    On some macOS/VPN setups, aiohttp + aiodns/pycares fails with
+    "Could not contact DNS servers" while curl/browser resolution works.
+    ThreadedResolver delegates to the same system resolver path and fixes
+    those false DNS failures.
+    """
+    return aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -124,8 +136,11 @@ class FXRateCache:
     def __init__(self, source: str = FX_RATE_SOURCE, refresh_sec: int = FX_REFRESH_SEC):
         self._source = source
         self._refresh_sec = refresh_sec
-        self._rate: float = 0.90     # bootstrap default (ECB ~2026 range)
-        self._fetched_at: float = 0.0
+        self._rate: float = 0.90         # bootstrap default (ECB ~2026 range)
+        # Force one immediate refresh on startup, but keep the age around the
+        # normal refresh interval (not Unix epoch) so staleness warnings do not
+        # explode before the first attempt.
+        self._fetched_at: float = time.time() - refresh_sec
         self._lock = asyncio.Lock()
 
     @property
@@ -141,17 +156,24 @@ class FXRateCache:
         if time.time() - self._fetched_at < self._refresh_sec:
             return self._rate
         async with self._lock:
+            # Double-checked locking: another coroutine may have refreshed already
             if time.time() - self._fetched_at < self._refresh_sec:
                 return self._rate
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(connector=_system_dns_connector()) as session:
                     async with session.get(self._source, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         data = await resp.json()
                         self._rate = float(data["rates"]["EUR"])
                         self._fetched_at = time.time()
                         logger.info(f"[FX] EUR/USD rate refreshed: {self._rate:.5f}")
             except Exception as exc:
-                logger.warning(f"[FX] Could not refresh rate: {exc}; using {self._rate:.5f}")
+                # Back off: retry after 30 s (half the normal interval) instead of
+                # re-attempting on every tick, which would spam the log at 2 lines/s.
+                self._fetched_at = time.time() - self._refresh_sec + 30
+                logger.warning(
+                    f"[FX] Could not refresh rate: {exc}; "
+                    f"using bootstrap {self._rate:.5f}, retrying in ~30 s"
+                )
         return self._rate
 
 
@@ -163,7 +185,7 @@ async def _fetch_bitstamp_quote(ticker: str) -> Optional[dict]:
     """Return {bid, ask, mid_price} from Bitstamp public REST, or None on error."""
     url = f"{BITSTAMP_REST_BASE}/ticker/{ticker}/"
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=_system_dns_connector()) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 d = await resp.json()
                 bid = float(d["bid"])
@@ -317,7 +339,7 @@ async def _fetch_binance_quote_eur(symbol: str, fx_eur_per_usd: float) -> Option
     pair = symbol.replace("/", "")
     url = f"https://api.binance.com/api/v3/ticker/bookTicker?symbol={pair}"
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(connector=_system_dns_connector()) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 d = await resp.json()
                 bid_usdt = float(d["bidPrice"])
@@ -368,7 +390,7 @@ class BitstampOrderbookCache:
             return cached["book"]
         url = f"{BITSTAMP_REST_BASE}/order_book/{ticker}/?group=1"
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=_system_dns_connector()) as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     d = await resp.json()
                     # Bitstamp returns lists of ["price", "amount", count]
@@ -422,9 +444,14 @@ class BinanceDepthCache:
         """Full top-20 order book in {Decimal: Decimal} format."""
         return self._orderbooks.get(symbol.upper())
 
-    def _process_depth(self, data: dict):
+    def _process_depth(self, data: dict, stream: Optional[str] = None):
         """Parse a depth20 snapshot message and update caches."""
+        # depth20 snapshots in Binance combined streams do not include "s".
+        # The symbol is carried in the wrapper stream name, e.g.
+        # "btcusdt@depth20@100ms".
         sym = data.get("s", "").upper()
+        if not sym and stream:
+            sym = stream.split("@", 1)[0].upper()
         if not sym:
             return
         raw_bids = data.get("bids", [])
@@ -467,9 +494,10 @@ class BinanceDepthCache:
                             break
                         try:
                             outer = json.loads(raw)
-                            # Combined stream wraps payload: {"stream":"...","data":{...}}
+                            # Combined stream wraps payload:
+                            # {"stream":"btcusdt@depth20@100ms","data":{...}}
                             data = outer.get("data", outer)
-                            self._process_depth(data)
+                            self._process_depth(data, outer.get("stream"))
                         except Exception as exc:
                             logger.debug(f"[BinanceDepthWS] Parse error: {exc}")
             except Exception as exc:

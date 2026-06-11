@@ -280,16 +280,18 @@ BSDEX_VOLUME_TIERS: list = [
         "note":            "",
     },
     {
-        "label":           "> $1B",
+        "label":           "> $1B (aspirational)",
         "min_vol_usd_m":   1000,
         "bitstamp_taker":  0.0003,   # 0.03 %
         "lmax_taker":      0.0003,   # 0.03 %
-        "note":            "",
+        "note":            "Aspirational tier — not representative of typical institutional flow.",
     },
 ]
 
-# Default startup tier index (0 = Retail)
-BSDEX_DEFAULT_TIER_IDX: int = 1   # "> $5M" as the default starting point
+# Default startup tier index — "> $20M" (index 2).
+# The >$1B tier is selectable but labelled aspirational; headline numbers must
+# not assume the most optimistic fee schedule (P7).
+BSDEX_DEFAULT_TIER_IDX: int = 2   # "> $20M" as the default starting point
 
 # Legacy fee presets kept for bsdex_backtest.py backward compatibility.
 BSDEX_STRATEGY_FEES = {
@@ -304,6 +306,20 @@ BSDEX_FEE_PRESETS = {
     "institutional_mid":  {"bsdex": "bsdex_institutional", "world": "lmax_high"},
 }
 BSDEX_ACTIVE_FEE_PRESET = "retail_demo"  # legacy — UI now uses volume tiers
+
+# ---------------------------------------------------------------------------
+# Backtest execution-cost model (P4).
+# Candle closes are mid prices; real fills cross the bid-ask spread.
+# These additive bps are applied on top of exchange fees at fill time.
+# "upper_bound" scenario zeros these; "realistic" scenario applies them.
+# ---------------------------------------------------------------------------
+BT_EXEC_COSTS = {
+    "half_spread_bps": {
+        "venue_a": 5.0,   # Bitstamp — wider spread, lower liquidity
+        "venue_b": 1.5,   # Binance/LMAX — tighter institutional spread
+    },
+    "slippage_bps_per_100k": 2.0,   # linear market-impact per €100k notional
+}
 
 # =============================================================================
 # Risk Management Settings

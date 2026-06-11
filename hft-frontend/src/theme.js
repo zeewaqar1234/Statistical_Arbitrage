@@ -2,68 +2,48 @@ import { createTheme } from '@mui/material/styles';
 
 const theme = createTheme({
   palette: {
-    mode: 'light',
-    primary: {
-      main: '#0D6EFD',
-      light: '#3d8bfd',
-      dark: '#0a58ca',
-    },
-    secondary: {
-      main: '#FD7E14',
-    },
-    background: {
-      default: '#F8F9FA',
-      paper: '#FFFFFF',
-    },
-    text: {
-      primary: '#212529',
-      secondary: '#6C757D',
-    },
-    success: {
-      main: '#198754',
-    },
-    error: {
-      main: '#DC3545',
-    },
-    warning: {
-      main: '#FFC107',
-    },
-    divider: '#DEE2E6',
+    mode: 'dark',
+    primary:    { main: '#FF8C00' },
+    secondary:  { main: '#FFB020' },
+    background: { default: '#0A0E17', paper: '#111620' },
+    text:       { primary: '#E8EAED', secondary: '#6B7B8D' },
+    success:    { main: '#00B060' },
+    error:      { main: '#FF3B3B' },
+    warning:    { main: '#FFD60A' },
+    divider:    '#1E2736',
   },
   typography: {
-    fontFamily: [
-      'Inter',
-      '-apple-system',
-      'BlinkMacSystemFont',
-      '"Segoe UI"',
-      'Roboto',
-      '"Helvetica Neue"',
-      'Arial',
-      'sans-serif',
-    ].join(','),
-    h6: {
-      fontSize: '16px',
-      fontWeight: 600,
-      color: '#212529',
-    },
+    fontFamily: "'IBM Plex Sans', -apple-system, sans-serif",
+    fontSize: 13,
   },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: { body: { background: '#0A0E17' } },
+    },
     MuiCard: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
-          border: '1px solid #DEE2E6',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+          borderRadius: 0,
+          border: '1px solid #1E2736',
+          boxShadow: 'none',
+          background: '#111620',
         },
       },
     },
     MuiButton: {
       styleOverrides: {
         root: {
-          textTransform: 'none',
+          textTransform: 'uppercase',
           fontWeight: 600,
-          borderRadius: 6,
+          borderRadius: 0,
+          letterSpacing: '0.5px',
+          fontSize: 11,
         },
+      },
+    },
+    MuiTooltip: {
+      styleOverrides: {
+        tooltip: { background: '#161C28', border: '1px solid #1E2736', borderRadius: 0 },
       },
     },
   },
