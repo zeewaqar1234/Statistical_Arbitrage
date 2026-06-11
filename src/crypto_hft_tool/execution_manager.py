@@ -1,8 +1,8 @@
 import asyncio
+from collections import deque
 from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from decimal import Decimal
-import numpy as np
 
 from .fee_manager import FeeManager
 from .utils.logging_config import get_logger
@@ -23,13 +23,14 @@ class ExecutionManager:
         self.max_price_impact = max_price_impact
         self.iceberg_threshold = iceberg_threshold
         self.min_fill_ratio = min_fill_ratio
-        
-        # Execution metrics
+
+        # Execution metrics — O(1) circular deques; no memory allocation on append.
+        # np.append() required full-array copy on every call (O(n)); deque is O(1).
         self.metrics = {
-            'slippage': np.array([], dtype=np.float64),
-            'fill_ratios': np.array([], dtype=np.float64),
-            'execution_times': np.array([], dtype=np.float64),
-            'price_impact': np.array([], dtype=np.float64)
+            'slippage':        deque(maxlen=1000),
+            'fill_ratios':     deque(maxlen=1000),
+            'execution_times': deque(maxlen=1000),
+            'price_impact':    deque(maxlen=1000),
         }
         
     def _calculate_liquidity_score(
@@ -180,24 +181,11 @@ class ExecutionManager:
             executed_price = float(order['average'])
             slippage = abs(executed_price - avg_price) / avg_price
             
-            # Update metrics
-            self.metrics['slippage'] = np.append(
-                self.metrics['slippage'], slippage
-            )
-            self.metrics['fill_ratios'] = np.append(
-                self.metrics['fill_ratios'], fill_ratio
-            )
-            self.metrics['execution_times'] = np.append(
-                self.metrics['execution_times'], execution_time
-            )
-            self.metrics['price_impact'] = np.append(
-                self.metrics['price_impact'], impact
-            )
-            
-            # Trim metrics arrays
-            if len(self.metrics['slippage']) > 1000:
-                for key in self.metrics:
-                    self.metrics[key] = self.metrics[key][-1000:]
+            # Update metrics — O(1) deque.append; oldest entry is evicted automatically
+            self.metrics['slippage'].append(slippage)
+            self.metrics['fill_ratios'].append(fill_ratio)
+            self.metrics['execution_times'].append(execution_time)
+            self.metrics['price_impact'].append(impact)
                     
             return order
             

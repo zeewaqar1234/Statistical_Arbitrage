@@ -357,28 +357,14 @@ async def startup_event():
         exit_z_threshold=EXIT_Z_THRESHOLD
     )
     
-    # Start data generation
-    await data_provider.start_data_generation()
+    # data_provider / historical preloading were used by the old Live Monitor loop.
+    # That loop is disabled, so we skip these to avoid unnecessary network calls.
+    # await data_provider.start_data_generation()  ← not needed
     
-    # Initialize historical data for each symbol
-    for symbol in ACTIVE_SYMBOLS:
-        for exchange in [ARBITRAGE_EXCHANGES["primary"], ARBITRAGE_EXCHANGES["secondary"]]:
-            historical_data = await data_provider.get_historical_data(
-                symbol=symbol,
-                exchange_name=exchange,
-                timeframe="1m",
-                limit=100  # Get initial history
-            )
-            if historical_data is not None:
-                # Process historical data through signal processors
-                for _, row in historical_data.iterrows():
-                    spread = row['bid'] - row['ask']
-                    volume = row['volume']
-                    timestamp = row.name  # Index is timestamp
-                    enhanced_signal_processors[symbol].update(spread, volume, timestamp)
-    
-    # Start background trading loop (Binance/Kraken — untouched)
-    asyncio.create_task(trading_loop())
+    # The Binance/Kraken trading_loop is no longer used — the Live Monitor tab
+    # has been removed. Keeping it running wastes REST calls and pollutes logs.
+    # asyncio.create_task(trading_loop())  ← intentionally disabled
+
     # Start BSDEX strategy loop — own isolated task, does not touch global state
     asyncio.create_task(bsdex_strategy.run())
     logger.info("All components initialized successfully.")
@@ -896,8 +882,8 @@ async def bsdex_historical_backtest(req: BSDEXBacktestRequest):
     """
     from src.crypto_hft_tool.bsdex_historical_bt import run_historical_backtest
 
-    if req.symbol not in ("btc-eur", "eth-eur"):
-        raise HTTPException(status_code=422, detail="symbol must be 'btc-eur' or 'eth-eur'")
+    if req.symbol not in ("btc-eur", "eth-eur", "btc-eur-kraken"):
+        raise HTTPException(status_code=422, detail="symbol must be 'btc-eur', 'eth-eur', or 'btc-eur-kraken'")
 
     try:
         start_dt = datetime.fromisoformat(req.start_dt.replace("Z", "+00:00"))

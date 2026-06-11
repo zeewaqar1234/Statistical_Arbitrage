@@ -272,11 +272,24 @@ class BSDEXBacktester:
         gross      = net + total_fees        # revenue before fees
         win_rate   = wins / n * 100
 
-        # Sharpe (daily PnL)
-        eq = [r["pnl"] for r in self.equity_curve]
-        daily_rets = np.diff(eq) if len(eq) > 1 else np.array([0.0])
-        sharpe = (np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(365 * 24 * 60)
-                  if np.std(daily_rets) > 0 else 0.0)
+        # Sharpe (daily, ann.) — P5: aggregate per-trade PnL into calendar days,
+        # compute daily return on capital, then annualise with sqrt(365).
+        # Guard std == 0 → None (displayed as "n/a" in UI).
+        from collections import defaultdict as _dd
+        daily_pnl_map: dict = _dd(float)
+        for t in self.trades:
+            try:
+                day = pd.Timestamp(t["timestamp"]).strftime("%Y-%m-%d")
+            except Exception:
+                day = str(t["timestamp"])[:10]
+            daily_pnl_map[day] += t["pnl_eur"]
+        capital = self.capital_per_leg_eur or 1.0
+        _daily_arr = np.array([v / capital for v in daily_pnl_map.values()])
+        if len(_daily_arr) >= 2:
+            _mu, _std = float(np.mean(_daily_arr)), float(np.std(_daily_arr, ddof=1))
+            sharpe = float(_mu / _std * np.sqrt(365)) if _std > 1e-10 else None
+        else:
+            sharpe = None
 
         # Max drawdown (EUR)
         running = np.array(eq)
@@ -294,7 +307,7 @@ class BSDEXBacktester:
             "total_fees_eur": round(total_fees, 4),
             "net_pnl_eur": round(net, 4),
             "avg_trade_pnl_eur": round(net / n, 4),
-            "sharpe_ratio": round(float(sharpe), 4),
+            "sharpe_ratio": round(float(sharpe), 4) if sharpe is not None else None,
             "max_drawdown_eur": round(max_dd, 4),
             "breakeven_spread_pct": round(breakeven_pct, 4),
             "post_auction_trades": len(post_auction_trades),

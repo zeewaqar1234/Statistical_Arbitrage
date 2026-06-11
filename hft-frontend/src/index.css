@@ -1,17 +1,38 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --bg-primary: #FFFFFF;
-  --bg-secondary: #F8F9FA;
-  --bg-card: #FFFFFF;
-  --border: #DEE2E6;
-  --text-primary: #212529;
-  --text-secondary: #6C757D;
-  --accent-blue: #0D6EFD;
-  --accent-green: #198754;
-  --accent-red: #DC3545;
-  --accent-yellow: #FFC107;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  /* ── Bloomberg dark palette ────────────────────────────── */
+  --bg-terminal:    #0A0E17;
+  --bg-panel:       #111620;
+  --bg-panel-alt:   #161C28;
+  --bg-input:       #0D1117;
+  --bg-row-alt:     #0E1219;
+
+  --border:         #1E2736;
+  --border-focus:   #2A3A52;
+
+  --text-primary:   #E8EAED;
+  --text-secondary: #6B7B8D;
+  --text-muted:     #3D4F63;
+
+  --accent-orange:  #FF8C00;
+  --accent-amber:   #FFB020;
+  --accent-green:   #00B060;
+  --accent-red:     #FF3B3B;
+  --accent-yellow:  #FFD60A;
+  --accent-blue:    #3B82F6;
+
+  --shadow: none;
+
+  /* ── Typography ────────────────────────────────────────── */
+  --font-sans:  'IBM Plex Sans', 'SF Pro Text', -apple-system, sans-serif;
+  --font-mono:  'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+  --font-size-xs:   11px;
+  --font-size-sm:   12px;
+  --font-size-md:   13px;
+  --font-size-lg:   15px;
+  --font-size-xl:   18px;
+  --font-size-xxl:  24px;
 }
 
 * {
@@ -20,20 +41,21 @@
 
 body {
   margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.4;
   color: var(--text-primary);
-  background: var(--bg-secondary);
+  background: var(--bg-terminal);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
 
 h1, h2, h3 {
   font-weight: 600;
   color: var(--text-primary);
+  margin: 0;
 }
 
 code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-family: var(--font-mono);
 }

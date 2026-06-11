@@ -20,22 +20,7 @@ import {
 } from 'recharts';
 
 const API_BASE_URL = config.apiUrl;
-const SYMBOLS = ['BTC/USDT', 'ETH/USDT'];
 const REFRESH_INTERVAL = 2000;
-const MAX_HISTORY_POINTS = 300;
-const MAX_ACTIVITY_ROWS = 20;
-const CHART_ANIMATION = { isAnimationActive: true, animationDuration: 400 };
-
-const FEE_TIER_LABELS = {
-  retail:         'Retail (VIP 0)',
-  retail_bnb:     'Retail + BNB Discount',
-  vip3:           'VIP 3 (~$20M/mo)',
-  vip5:           'VIP 5 (~$150M/mo)',
-  vip9:           'VIP 9 (~$5B/mo)',
-  market_maker:   'Registered Market Maker',
-  dekabank_proxy: 'DekaBank-scale Proxy',
-  zero_fee:       'Zero Fee (illustrative)',
-};
 
 const api = {
   getMarketData: async (symbol) => {
@@ -134,96 +119,15 @@ const api = {
 
 const queryClient = new QueryClient();
 
-function formatTime(date) {
-  return date.toLocaleTimeString('en-US', { hour12: false });
-}
-
-function formatChartTime(ts) {
-  const d = ts instanceof Date ? ts : new Date(ts);
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-}
-
-function getSignalClass(strength, threshold) {
-  const s = strength ?? 0;
-  const t = threshold ?? 1;
-  if (s >= t) return 'negative';
-  if (s >= t * 0.75) return 'warning';
-  return 'positive';
-}
-
-function formatMetric(value, decimals = 4) {
-  if (value == null || Number.isNaN(value)) return '—';
-  return value.toFixed(decimals);
-}
-
-function formatPercent(value) {
-  if (value == null || Number.isNaN(value)) return '—';
-  return `${(value * 100).toFixed(2)}%`;
-}
-
-function formatUsd(value, decimals = 4) {
-  if (value == null || Number.isNaN(value)) return '—';
-  return value.toFixed(decimals);
-}
-
-function getRelativePriceClass(exchangeDelta, otherDelta) {
-  if (exchangeDelta > otherDelta) return 'positive';
-  if (exchangeDelta < otherDelta) return 'negative';
-  return 'neutral';
-}
-
-function tradeSide(trade) {
-  return trade.buy_exchange === 'binance' ? 'BUY' : 'SELL';
-}
-
-function exportActivityCsv(rows) {
-  const header = 'Timestamp,Side,Route,Gross,Fees,Net PnL\n';
-  const body = rows
-    .map((r) => `${r.timestamp},${r.side},${r.route},${r.gross},${r.fees},${r.net}`)
-    .join('\n');
-  const blob = new Blob([header + body], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `activity_${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 const tooltipStyle = {
-  background: '#FFFFFF',
-  border: '1px solid #DEE2E6',
-  borderRadius: '6px',
-  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-  fontSize: 12,
+  backgroundColor: '#161C28',
+  border: '1px solid #1E2736',
+  borderRadius: 0,
+  boxShadow: 'none',
+  padding: '6px 10px',
+  fontSize: 11,
+  fontFamily: "'IBM Plex Mono', monospace",
 };
-
-function PnlTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="pnl-tooltip" style={tooltipStyle}>
-      <div style={{ marginBottom: 4, fontWeight: 600 }}>Trade #{label}</div>
-      {payload.map((entry) => (
-        <div key={entry.dataKey} style={{ color: entry.color, fontSize: 12 }}>
-          {entry.name}: {Number(entry.value).toFixed(6)}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SpreadTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  const pct = payload.find((p) => p.dataKey === 'spreadPct');
-  const abs = payload.find((p) => p.dataKey === 'spreadAbs');
-  return (
-    <div className="pnl-tooltip" style={tooltipStyle}>
-      <div style={{ marginBottom: 4, fontWeight: 600, color: '#6C757D', fontSize: 11 }}>{label}</div>
-      {pct  && <div style={{ color: pct.color,  fontSize: 12 }}>Spread %: {Number(pct.value).toFixed(4)}%</div>}
-      {abs  && <div style={{ color: '#adb5bd', fontSize: 12 }}>Spread $: {Number(abs.value).toFixed(4)}</div>}
-    </div>
-  );
-}
 
 function BsdexSpreadTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -238,9 +142,31 @@ function BsdexSpreadTooltip({ active, payload, label }) {
   );
 }
 
+/* ── Bloomberg multi-timezone clock ──────────────────────────── */
+function Clock({ label, offset }) {
+  const [t, setT] = useState('');
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date();
+      const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+      const local = new Date(utc + offset * 3600000);
+      setT(local.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [offset]);
+  return (
+    <div className="clock-cell">
+      <span className="clock-label">{label}</span>
+      <span className="clock-time mono">{t}</span>
+    </div>
+  );
+}
+
 function AppContent() {
-  const [isRunning, setIsRunning] = useState(true);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [isRunning] = useState(true);
+  // currentTime is managed per-timezone by Clock components
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState('bsdex');
@@ -251,7 +177,7 @@ function AppContent() {
   const [hbtStartDt,     setHbtStartDt]     = useState('');        // datetime-local string
   const [hbtEndDt,       setHbtEndDt]       = useState('');
   const [hbtFeeMode,     setHbtFeeMode]     = useState('auto');
-  const [hbtTierIdx,     setHbtTierIdx]     = useState(1);          // index into bsdexVolumeTiers
+  const [hbtTierIdx,     setHbtTierIdx]     = useState(2);          // index into bsdexVolumeTiers — "> $20M" default (P7)
   const [hbtFeeA,        setHbtFeeA]        = useState(0.0012);
   const [hbtFeeB,        setHbtFeeB]        = useState(0.0006);
   const [hbtCapital,     setHbtCapital]     = useState(1000);
@@ -263,7 +189,7 @@ function AppContent() {
   const [bsdexMarket, setBsdexMarket]           = useState('btc-eur');
   const [bsdexCapitalEur, setBsdexCapitalEur]   = useState(1000);
   const [bsdexFeeMode, setBsdexFeeMode]         = useState('auto');   // 'auto' | 'manual'
-  const [bsdexTierIdx, setBsdexTierIdx]         = useState(1);        // index into volume tiers
+  const [bsdexTierIdx, setBsdexTierIdx]         = useState(2);        // index into volume tiers — "> $20M" default (P7)
   const [bsdexFeeA, setBsdexFeeA]               = useState(0.0012);   // Bitstamp taker (decimal)
   const [bsdexFeeB, setBsdexFeeB]               = useState(0.0006);   // LMAX taker (decimal)
   const [bsdexConfigSaving, setBsdexConfigSaving] = useState(false);
@@ -413,6 +339,7 @@ function AppContent() {
                          ? bsdexVolumeTiers[hbtTierIdx].label
                          : 'manual',
       });
+      // result now has shape: { realistic, upper_bound, meta }
       setHbtResult(result);
       setHbtStatus('done');
     } catch (err) {
@@ -422,968 +349,745 @@ function AppContent() {
   }, [hbtSymbol, hbtStartDt, hbtEndDt, hbtFeeA, hbtFeeB, hbtCapital,
       hbtFeeMode, hbtTierIdx, bsdexVolumeTiers]);
 
-  // Excel export via SheetJS
+  // Excel export via SheetJS — handles dual-scenario result shape
   const handleExportExcel = useCallback(() => {
     if (!hbtResult) return;
     import('xlsx').then((XLSX) => {
       const wb = XLSX.utils.book_new();
 
-      // Sheet 1: Summary
-      const summary = hbtResult.summary;
-      const sumRows = Object.entries(summary).map(([k, v]) => ({ Field: k, Value: v }));
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sumRows), 'Summary');
+      const writeScenario = (scenario, label) => {
+        if (!scenario) return;
+        const sumRows = Object.entries(scenario.summary).map(([k, v]) => ({ Field: k, Value: v }));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sumRows), `${label} Summary`);
 
-      // Sheet 2: Trades
-      if (hbtResult.trades.length > 0) {
-        const tradeRows = hbtResult.trades.map((t) => ({
-          Timestamp:     t.ts_str?.slice(0, 19).replace('T', ' '),
-          Direction:     t.direction,
-          'Spread %':   t.spread_pct,
-          'Z-Score':    t.z_score,
-          'Price A (€)': t.price_a_eur,
-          'Price B (€)': t.price_b_eur,
-          'Amount':     t.amount,
-          'Gross (€)':  t.gross_eur,
-          'Fees (€)':   t.fees_eur,
-          'Net PnL (€)': t.pnl_eur,
-          'Buy Exchange':  t.buy_exchange,
-          'Sell Exchange': t.sell_exchange,
-        }));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tradeRows), 'Trades');
-      }
+        if (scenario.trades?.length > 0) {
+          const tradeRows = scenario.trades.map((t) => ({
+            Timestamp:      t.ts_str?.slice(0, 19).replace('T', ' '),
+            Direction:      t.direction,
+            'Spread %':     t.spread_pct,
+            'Z-Score':      t.z_score,
+            'Signal A (€)': t.price_a_eur,
+            'Signal B (€)': t.price_b_eur,
+            'Fill A (€)':   t.fill_a_eur,
+            'Fill B (€)':   t.fill_b_eur,
+            'Amount':       t.amount,
+            'Gross (€)':    t.gross_eur,
+            'Fees (€)':     t.fees_eur,
+            'Net PnL (€)':  t.pnl_eur,
+            'Slip bps':     t.slip_bps,
+            'Buy Exchange':  t.buy_exchange,
+            'Sell Exchange': t.sell_exchange,
+          }));
+          XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tradeRows), `${label} Trades`);
+        }
 
-      // Sheet 3: Spread Series (downsampled)
-      if (hbtResult.spread_series.length > 0) {
-        const spreadRows = hbtResult.spread_series.map((p) => ({
-          Timestamp:  p.ts_str?.slice(0, 19).replace('T', ' '),
-          'Spread %': p.spread_pct,
-          'Z-Score':  p.z_score,
-          Threshold:  p.threshold,
-        }));
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(spreadRows), 'Spread Series');
-      }
+        if (scenario.spread_series?.length > 0) {
+          const spreadRows = scenario.spread_series.map((p) => ({
+            Timestamp:  p.ts_str?.slice(0, 19).replace('T', ' '),
+            'Spread %': p.spread_pct,
+            'Z-Score':  p.z_score,
+            Threshold:  p.threshold,
+          }));
+          XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(spreadRows), `${label} Spread`);
+        }
+      };
 
-      const sym = hbtSymbol.replace('-', '').toUpperCase();
+      writeScenario(hbtResult.realistic,   'Realistic');
+      writeScenario(hbtResult.upper_bound, 'UpperBound');
+
+      const sym = hbtSymbol.replace(/-/g, '').toUpperCase();
       const dateStr = hbtStartDt?.slice(0, 10) ?? 'bt';
       XLSX.writeFile(wb, `BSDEX_Backtest_${sym}_${dateStr}.xlsx`);
     });
   }, [hbtResult, hbtSymbol, hbtStartDt]);
 
 
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
 
   // isConnected: derive from BSDEX market data since we only have the BSDEX tab now
   const isConnected = isRunning && !!bsdexMarketData;
 
 
+  const signalTagClass = bsdexSignalTriggered ? 'tag-green'
+    : bsdexSignalGated    ? 'tag-yellow'
+    : bsdexSignalCooldown ? 'tag-orange'
+    : 'tag-muted';
+  const signalTagText = bsdexSignalTriggered ? 'SIGNAL'
+    : bsdexSignalGated    ? 'GATED'
+    : bsdexSignalCooldown ? 'COOLDOWN'
+    : 'HOLD';
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
+      <div className={`dashboard${activeTab === 'backtest' ? ' tab-backtest' : ''}`}>
+
+      {/* ══ TOP BAR ══════════════════════════════════════════════ */}
       <header className="top-bar">
-        <h1 className="top-bar-title">Cross-Exchange Statistical Arbitrage System</h1>
-        <div className="top-bar-right">
-          <div className="tab-nav">
-            <button type="button" className={`tab-btn tab-btn-bsdex ${activeTab === 'bsdex' ? 'active' : ''}`} onClick={() => setActiveTab('bsdex')}>BSDEX vs World</button>
-            <button type="button" className={`tab-btn ${activeTab === 'backtest' ? 'active' : ''}`} onClick={() => setActiveTab('backtest')}>BSDEX Backtest</button>
-          </div>
-          <div className="connection-status">
-            <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
-            {isConnected ? 'Connected' : isRunning ? 'Connecting…' : 'Stopped'}
-          </div>
-          <span className="current-time">{formatTime(currentTime)}</span>
+        <span className="top-bar-logo">STAT ARB</span>
+        <div className="top-bar-sep" />
+        <div className="tab-nav">
+          <button type="button" className={`tab-link ${activeTab === 'bsdex' ? 'active' : ''}`} onClick={() => setActiveTab('bsdex')}>BSDEX vs World</button>
+          <button type="button" className={`tab-link ${activeTab === 'backtest' ? 'active' : ''}`} onClick={() => setActiveTab('backtest')}>Backtest</button>
+        </div>
+        <div className="top-bar-spacer" />
+        <div className="top-bar-clocks">
+          <Clock label="FRA" offset={2} />
+          <Clock label="LDN" offset={1} />
+          <Clock label="NYC" offset={-4} />
+        </div>
+        <div className="top-bar-sep" />
+        <div className="top-bar-conn">
+          <span className={`live-dot${isConnected ? '' : ' disconnected'}`} />
+          <span className="top-bar-status mono">{isConnected ? 'LIVE' : 'DISC'}</span>
         </div>
       </header>
 
-      <main className="dashboard">
+      {/* ══ LEFT PANEL (BSDEX only) ══════════════════════════════ */}
+      <aside className="left-panel">
+        {activeTab === 'bsdex' && (
+          <>
+            <div className="lp-section">
+              <div className="section-header">Venue A — Bitstamp EUR</div>
+              <div className="lp-row">
+                <span className="lp-label">BID</span>
+                <span className={`lp-value big ${bsdexPriceTrend.venueA === 'positive' ? 'pnl-pos' : bsdexPriceTrend.venueA === 'negative' ? 'pnl-neg' : ''}`}>
+                  {bsdexMarketData?.a_bid != null ? `€${bsdexMarketData.a_bid.toFixed(2)}` : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">ASK</span>
+                <span className="lp-value">{bsdexMarketData?.a_ask != null ? `€${bsdexMarketData.a_ask.toFixed(2)}` : '—'}</span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">MID</span>
+                <span className="lp-value">{venueAMid != null ? `€${venueAMid.toFixed(2)}` : '—'}</span>
+              </div>
+            </div>
+            <div className="lp-section">
+              <div className="section-header">Venue B — World (LMAX)</div>
+              <div className="lp-row">
+                <span className="lp-label">BID</span>
+                <span className={`lp-value big ${bsdexPriceTrend.venueB === 'positive' ? 'pnl-pos' : bsdexPriceTrend.venueB === 'negative' ? 'pnl-neg' : ''}`}>
+                  {bsdexMarketData?.b_bid != null ? `€${bsdexMarketData.b_bid.toFixed(2)}` : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">ASK</span>
+                <span className="lp-value">{bsdexMarketData?.b_ask != null ? `€${bsdexMarketData.b_ask.toFixed(2)}` : '—'}</span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">MID</span>
+                <span className="lp-value">{venueBMid != null ? `€${venueBMid.toFixed(2)}` : '—'}</span>
+              </div>
+            </div>
+            <div className="lp-section">
+              <div className="section-header">Spread</div>
+              <div className="lp-row">
+                <span className="lp-label">EUR</span>
+                <span className={`lp-value big ${bsdexSpread != null ? (bsdexSpread >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}`}>
+                  {bsdexSpread != null ? `${bsdexSpread >= 0 ? '+' : ''}€${bsdexSpread.toFixed(2)}` : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">PCT</span>
+                <span className={`lp-value ${bsdexSpreadPct != null ? (bsdexSpreadPct >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}`}>
+                  {bsdexSpreadPct != null ? `${bsdexSpreadPct >= 0 ? '+' : ''}${bsdexSpreadPct.toFixed(4)}%` : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label" style={{color:'var(--text-muted)'}}>B/E</span>
+                <span className="lp-value muted">{bsdexBreakevenPct.toFixed(3)}%</span>
+              </div>
+            </div>
+            <div className="lp-section">
+              <div className="section-header">Signal</div>
+              <div className="lp-row">
+                <span className="lp-label">Z-SCORE</span>
+                <span className={`lp-value big ${bsdexSignalTriggered ? 'pnl-pos' : ''}`}>
+                  {bsdexZScore != null ? bsdexZScore.toFixed(4) : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">THRESHOLD</span>
+                <span className="lp-value">{bsdexThreshold?.toFixed(4) ?? '—'}</span>
+              </div>
+              <div className="lp-row" style={{marginTop:4}}>
+                <span className="lp-label">STATE</span>
+                <span className={`tag ${signalTagClass}`}>{signalTagText}</span>
+              </div>
+            </div>
+            <div className="lp-section">
+              <div className="section-header">Data</div>
+              <div className="lp-row">
+                <span className="lp-label">FX RATE</span>
+                <span className="lp-value orange">{bsdexStatus?.fx_rate_usd_eur?.toFixed(5) ?? '—'}</span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">FX AGE</span>
+                <span className={`lp-value ${(bsdexStatus?.fx_age_sec ?? 0) > 120 ? 'pnl-neg' : ''}`}>
+                  {bsdexStatus?.fx_age_sec != null ? `${Math.round(bsdexStatus.fx_age_sec)}s` : '—'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">B SRC</span>
+                <span className="lp-value muted" style={{fontSize:'var(--font-size-xs)'}}>
+                  {bsdexMarketData?.venue_b_source === 'binance_ws_depth' ? 'WS' : 'REST'}
+                </span>
+              </div>
+              <div className="lp-row">
+                <span className="lp-label">MODEL</span>
+                <span className="lp-value muted" style={{fontSize:'var(--font-size-xs)'}}>
+                  {bsdexMarketData?.price_model ?? '—'}
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+      </aside>
 
-        {/* ══════════════════════════════════════════════════════════
-             BACKTEST TAB
-            ══════════════════════════════════════════════════════════ */}
-        {/* ══════════════════════════════════════════════════════════
-             BSDEX HISTORICAL BACKTEST TAB
-            Real 1-minute OHLCV from Bitstamp (EUR) + Binance (USDT→EUR)
-            Same spread/z-score logic as the live BSDEX vs World strategy
-            ══════════════════════════════════════════════════════════ */}
-        {activeTab === 'backtest' && (
-          <div className="backtest-tab">
+      {/* ══ CENTER PANEL ═════════════════════════════════════════ */}
+      <div className="center-panel">
 
-            {/* ── Config card ──────────────────────────────────────── */}
-            <section>
-              <h2 className="section-header">BSDEX vs World — Historical Backtest</h2>
-              <div className="card config-panel">
-                <p className="chart-legend-hint" style={{ marginBottom: 14 }}>
-                  Fetches <strong>real 1-minute OHLCV</strong> from Bitstamp (EUR) and Binance (USDT→EUR via Frankfurter/ECB FX).
-                  Runs the same spread / z-score logic as the live strategy (60-minute rolling window, threshold 1.5σ, 30-minute trade cooldown).
-                  All prices and PnL in <strong>EUR</strong>. Max range: 7 days.
-                </p>
-
-                <div className="config-grid">
-                  {/* Symbol + Date range */}
-                  <div className="config-field">
-                    <label className="config-label">Market</label>
-                    <select className="config-input" value={hbtSymbol} onChange={(e) => setHbtSymbol(e.target.value)}>
-                      <option value="btc-eur">BTC/EUR (Bitstamp BTC/EUR vs Binance BTC/USDT→EUR)</option>
-                      <option value="eth-eur">ETH/EUR (Bitstamp ETH/EUR vs Binance ETH/USDT→EUR)</option>
-                    </select>
-                  </div>
-                  <div className="config-field">
-                    <label className="config-label">Start date &amp; time (UTC)</label>
-                    <input type="datetime-local" className="config-input"
-                      value={hbtStartDt}
-                      onChange={(e) => setHbtStartDt(e.target.value)} />
-                  </div>
-                  <div className="config-field">
-                    <label className="config-label">End date &amp; time (UTC)</label>
-                    <input type="datetime-local" className="config-input"
-                      value={hbtEndDt}
-                      onChange={(e) => setHbtEndDt(e.target.value)} />
-                  </div>
-
-                  {/* Capital */}
-                  <div className="config-field">
-                    <label className="config-label">Capital per leg (EUR)</label>
-                    <div className="fee-input-wrap">
-                      <input type="number" className="config-input fee-pct-input"
-                        min="10" step="100" value={hbtCapital}
-                        onChange={(e) => setHbtCapital(parseFloat(e.target.value) || 1000)} />
-                      <span className="fee-unit">EUR</span>
-                    </div>
-                    <div className="config-hint">EUR deployed per venue per trade.</div>
-                  </div>
-                </div>
-
-                {/* Fee selection — same UI as BSDEX vs World tab */}
-                <div style={{ marginTop: 12 }}>
-                  <div className="fee-mode-row">
-                    <label className="fee-mode-opt">
-                      <input type="radio" name="hbtFeeMode" value="auto" checked={hbtFeeMode === 'auto'} onChange={() => handleHbtFeeModeChange('auto')} />
-                      {' '}Volume tier (auto)
-                    </label>
-                    <label className="fee-mode-opt">
-                      <input type="radio" name="hbtFeeMode" value="manual" checked={hbtFeeMode === 'manual'} onChange={() => handleHbtFeeModeChange('manual')} />
-                      {' '}Manual fees
-                    </label>
-                  </div>
-
-                  {hbtFeeMode === 'auto' && (
-                    <div className="config-field">
-                      <label className="config-label">30-Day USD Trading Volume</label>
-                      <select className="config-input" value={hbtTierIdx} onChange={(e) => handleHbtTierChange(parseInt(e.target.value))}>
-                        {bsdexVolumeTiers.map((t, i) => (
-                          <option key={i} value={i}>
-                            {t.label} — Bitstamp: {(t.bitstamp_taker * 100).toFixed(2)}% · LMAX: {(t.lmax_taker * 100).toFixed(2)}% · B/E: {((t.bitstamp_taker + t.lmax_taker) * 100).toFixed(2)}%
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <div className="fee-inputs-row">
-                    <div className="fee-input-group">
-                      <label className="config-label">Venue A — Bitstamp taker</label>
-                      <div className="fee-input-wrap">
-                        <input type="number" className="config-input fee-pct-input"
-                          min="0" max="5" step="0.001"
-                          value={(hbtFeeA * 100).toFixed(3)}
-                          readOnly={hbtFeeMode === 'auto'}
-                          style={hbtFeeMode === 'auto' ? { background: '#F8F9FA', cursor: 'not-allowed' } : {}}
-                          onChange={(e) => setHbtFeeA(Math.max(0, parseFloat(e.target.value) || 0) / 100)} />
-                        <span className="fee-unit">%</span>
-                      </div>
-                    </div>
-                    <div className="fee-input-group">
-                      <label className="config-label">Venue B — LMAX Digital taker</label>
-                      <div className="fee-input-wrap">
-                        <input type="number" className="config-input fee-pct-input"
-                          min="0" max="5" step="0.001"
-                          value={(hbtFeeB * 100).toFixed(3)}
-                          readOnly={hbtFeeMode === 'auto'}
-                          style={hbtFeeMode === 'auto' ? { background: '#F8F9FA', cursor: 'not-allowed' } : {}}
-                          onChange={(e) => setHbtFeeB(Math.max(0, parseFloat(e.target.value) || 0) / 100)} />
-                        <span className="fee-unit">%</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="breakeven-banner" style={{ marginTop: 10 }}>
-                    Break-even spread: <strong>{((hbtFeeA + hbtFeeB) * 100).toFixed(3)}%</strong>
-                    <span className="breakeven-detail">
-                      ({(hbtFeeA * 100).toFixed(3)}% + {(hbtFeeB * 100).toFixed(3)}% combined taker) — trade fires only when |spread| exceeds this
-                    </span>
-                  </div>
-                </div>
-
-                <div className="config-actions" style={{ marginTop: 16 }}>
-                  <button type="button" className="btn btn-apply"
-                    onClick={handleRunHistoricalBacktest}
-                    disabled={hbtStatus === 'running'}>
-                    {hbtStatus === 'running' ? 'Fetching data & running…' : 'Run Backtest'}
-                  </button>
-                  {hbtResult && hbtStatus === 'done' && (
-                    <button type="button" className="btn btn-secondary" onClick={handleExportExcel}
-                      style={{ marginLeft: 12 }}>
-                      Export to Excel
-                    </button>
-                  )}
-                  {hbtError && <div className="config-error" style={{ marginTop: 8 }}>{hbtError}</div>}
+        {/* --- BSDEX vs WORLD center --- */}
+        {activeTab === 'bsdex' && (
+          <>
+            <div className="chart-panel">
+              <div className="chart-panel-header">
+                <span className="chart-panel-title">Cross-Exchange Spread — {bsdexBase}-EUR</span>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span className="chart-panel-sub">Bitstamp EUR vs Binance→EUR</span>
+                  <select className="pair-select" value={bsdexMarket} onChange={(e) => setBsdexMarket(e.target.value)}>
+                    <option value="btc-eur">BTC/EUR</option>
+                    <option value="eth-eur">ETH/EUR</option>
+                  </select>
                 </div>
               </div>
-            </section>
+              <div className="chart-body">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={bsdexChartData} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                    <CartesianGrid stroke="#1E2736" strokeDasharray="3 3" />
+                    <XAxis dataKey="time" tick={{ fill: '#6B7B8D', fontSize: 10, fontFamily: 'IBM Plex Mono' }}
+                      axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }} />
+                    <YAxis tick={{ fill: '#6B7B8D', fontSize: 10, fontFamily: 'IBM Plex Mono' }}
+                      axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
+                      tickFormatter={(v) => `${v.toFixed(3)}%`} />
+                    <Tooltip content={<BsdexSpreadTooltip />} />
+                    <ReferenceLine y={0} stroke="#3D4F63" strokeWidth={0.5} />
+                    <ReferenceLine y={bsdexBreakevenPct} stroke="#FF8C00" strokeDasharray="4 4"
+                      label={{ value: 'B/E', fill: '#FF8C00', fontSize: 9 }} />
+                    <ReferenceLine y={-bsdexBreakevenPct} stroke="#FF8C00" strokeDasharray="4 4" />
+                    <Area type="monotone" dataKey="spreadPct" name="Spread %" dot={false} strokeWidth={1.5}
+                      stroke="#4FC3F7" fill="rgba(79,195,247,0.08)" isAnimationActive={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="chart-panel-secondary">
+              <div className="chart-panel-header">
+                <span className="chart-panel-title">Z-Score vs Adaptive Threshold</span>
+                <span className="chart-panel-sub">trade fires when z ≥ threshold &amp; spread &gt; B/E</span>
+              </div>
+              <div className="chart-body">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={bsdexChartData} margin={{ top: 4, right: 16, left: 4, bottom: 4 }}>
+                    <CartesianGrid stroke="#1E2736" strokeDasharray="3 3" />
+                    <XAxis dataKey="time" tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                      axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }} />
+                    <YAxis tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                      axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }} />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <ReferenceLine y={0} stroke="#3D4F63" strokeWidth={0.5} />
+                    <Line type="monotone" dataKey="zScore" name="Z-Score" stroke="#00B060" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="threshold" name="Threshold" stroke="#FF3B3B" dot={false} strokeWidth={1} strokeDasharray="6 4" isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="txn-model">
+              <div className="txn-box">
+                <div className="txn-title setup">Setup</div>
+                <div className="txn-row"><span className="txn-key">Capital</span><span className="txn-val">€{bsdexCapitalEur.toLocaleString()}</span></div>
+                <div className="txn-row"><span className="txn-key">B/E</span><span className="txn-val">{bsdexBreakevenPct.toFixed(3)}%</span></div>
+                <div className="txn-row"><span className="txn-key">Fee A</span><span className="txn-val">{(bsdexFeeA*100).toFixed(3)}%</span></div>
+                <div className="txn-row"><span className="txn-key">Fee B</span><span className="txn-val">{(bsdexFeeB*100).toFixed(3)}%</span></div>
+              </div>
+              <div className="txn-arrow">›</div>
+              <div className="txn-box">
+                <div className="txn-title signal">Signal</div>
+                <div className="txn-row"><span className="txn-key">Z-Score</span><span className="txn-val">{bsdexZScore?.toFixed(4) ?? '—'}</span></div>
+                <div className="txn-row"><span className="txn-key">Threshold</span><span className="txn-val">{bsdexThreshold?.toFixed(4) ?? '—'}</span></div>
+                <div className="txn-row"><span className="txn-key">Spread</span><span className={`txn-val ${bsdexSpreadPct != null ? (bsdexSpreadPct >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}`}>{bsdexSpreadPct?.toFixed(4) ?? '—'}%</span></div>
+              </div>
+              <div className="txn-arrow">›</div>
+              <div className={`txn-box ${bsdexSignalTriggered ? 'active-box' : bsdexSignalGated ? 'gated-box' : ''}`}>
+                <div className={`txn-title ${bsdexSignalTriggered ? 'exec' : bsdexSignalGated ? 'gated' : 'signal'}`}>
+                  {bsdexSignalTriggered ? 'Execution' : bsdexSignalGated ? 'Gated' : 'Waiting'}
+                </div>
+                {bsdexSignalTriggered ? (
+                  <>
+                    <div className="exec-leg buy">BUY {bsdexStatus?.venue_b ?? 'World'} <span className="exec-price">{bsdexMarketData?.b_ask?.toFixed(2)}</span></div>
+                    <div className="exec-leg sell">SELL {bsdexStatus?.venue_a ?? 'Bitstamp'} <span className="exec-price">{bsdexMarketData?.a_bid?.toFixed(2)}</span></div>
+                  </>
+                ) : bsdexSignalGated ? (
+                  <div className="txn-waiting">Spread {bsdexSpreadPct?.toFixed(4)}% &lt; B/E {bsdexBreakevenPct.toFixed(3)}%</div>
+                ) : bsdexSignalCooldown ? (
+                  <div className="txn-waiting">Post-trade cooldown active</div>
+                ) : (
+                  <div className="txn-waiting">Waiting for z ≥ threshold</div>
+                )}
+              </div>
+            </div>
+            <details className="methodology-disclosure">
+              <summary>Monitor Methodology &amp; Model Assumptions</summary>
+              <div className="methodology-body">
+                <div className="methodology-col">
+                  <h4>Architecture</h4>
+                  <p>Latency-tolerant statistical arbitrage monitor. Polls Bitstamp and Binance REST every ~1 s. The spread dislocation (BSDEX/Bitstamp structural lag, lower liquidity) occurs on a seconds-to-minutes time scale, which a 1 s loop genuinely captures.</p>
+                </div>
+                <div className="methodology-col">
+                  <h4>Signal Logic</h4>
+                  <p><strong>Trigger quantity:</strong> raw z-score of the EUR price spread over a rolling window. Adaptive threshold adjusts for spread volatility. Raw z-score drives both display and trade decisions — consistent with the historical backtest.</p>
+                </div>
+                <div className="methodology-col">
+                  <h4>FX Conversion</h4>
+                  <p>Binance USDT prices converted to EUR via ECB rate refreshed every 60 s from api.frankfurter.app. Intraday EUR/USD drift (1–3 bp/hr) represents an unhedged basis risk on each leg.</p>
+                </div>
+              </div>
+            </details>
+          </>
+        )}
 
-            {/* ── Running spinner ───────────────────────────────────── */}
+        {/* --- BACKTEST center --- */}
+        {activeTab === 'backtest' && (
+          <div className="backtest-layout">
+            <div className="bt-config-panel">
+              <div className="section-header">BSDEX vs World — Historical Backtest</div>
+              <p style={{fontSize:'var(--font-size-xs)',color:'var(--text-secondary)',margin:'0 0 10px',lineHeight:1.6}}>
+                Fetches <strong>real 1-minute OHLCV</strong> from Bitstamp (EUR) and Binance (USDT→EUR via Frankfurter/ECB FX).
+                Runs the same spread / z-score logic as the live strategy (60-min rolling window, threshold 1.5σ, 30-min trade cooldown).
+                All prices and PnL in <strong>EUR</strong>. Max range: 7 days.
+              </p>
+              <div className="bt-config-grid">
+                <div className="bt-field">
+                  <label>Market</label>
+                  <select className="bb-select" value={hbtSymbol} onChange={(e) => setHbtSymbol(e.target.value)}>
+                    <option value="btc-eur">BTC/EUR (Bitstamp vs Binance→EUR)</option>
+                    <option value="eth-eur">ETH/EUR (Bitstamp vs Binance→EUR)</option>
+                    <option value="btc-eur-kraken">Control pair (no FX leg) — BTC/EUR Bitstamp vs Kraken</option>
+                  </select>
+                </div>
+                <div className="bt-field">
+                  <label>Start (UTC)</label>
+                  <input type="datetime-local" className="bb-input" value={hbtStartDt} onChange={(e) => setHbtStartDt(e.target.value)} />
+                </div>
+                <div className="bt-field">
+                  <label>End (UTC)</label>
+                  <input type="datetime-local" className="bb-input" value={hbtEndDt} onChange={(e) => setHbtEndDt(e.target.value)} />
+                </div>
+                <div className="bt-field">
+                  <label>Capital / leg (EUR)</label>
+                  <input type="number" className="bb-input" min="10" step="100" value={hbtCapital}
+                    onChange={(e) => setHbtCapital(parseFloat(e.target.value) || 1000)} />
+                </div>
+              </div>
+              <div className="bt-fee-row">
+                <div className="fee-mode-toggle" style={{width:180,flexShrink:0}}>
+                  <button className={`fee-mode-btn ${hbtFeeMode === 'auto' ? 'active' : ''}`} onClick={() => handleHbtFeeModeChange('auto')}>Auto</button>
+                  <button className={`fee-mode-btn ${hbtFeeMode === 'manual' ? 'active' : ''}`} onClick={() => handleHbtFeeModeChange('manual')}>Manual</button>
+                </div>
+                {hbtFeeMode === 'auto' && (
+                  <div className="bt-field" style={{flex:1}}>
+                    <label>Volume Tier</label>
+                    <select className="bb-select" value={hbtTierIdx} onChange={(e) => handleHbtTierChange(parseInt(e.target.value))}>
+                      {bsdexVolumeTiers.map((t, i) => (
+                        <option key={i} value={i}>{t.label} — BS:{(t.bitstamp_taker*100).toFixed(2)}% · LM:{(t.lmax_taker*100).toFixed(2)}% · B/E:{((t.bitstamp_taker+t.lmax_taker)*100).toFixed(2)}%</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="bt-field" style={{width:120,flexShrink:0}}>
+                  <label>Venue A Taker %</label>
+                  <input type="number" className="bb-input" min="0" max="5" step="0.001"
+                    value={(hbtFeeA*100).toFixed(3)} readOnly={hbtFeeMode === 'auto'}
+                    onChange={(e) => setHbtFeeA(Math.max(0, parseFloat(e.target.value)||0)/100)} />
+                </div>
+                <div className="bt-field" style={{width:120,flexShrink:0}}>
+                  <label>Venue B Taker %</label>
+                  <input type="number" className="bb-input" min="0" max="5" step="0.001"
+                    value={(hbtFeeB*100).toFixed(3)} readOnly={hbtFeeMode === 'auto'}
+                    onChange={(e) => setHbtFeeB(Math.max(0, parseFloat(e.target.value)||0)/100)} />
+                </div>
+              </div>
+              <div className="be-box" style={{width:'fit-content',marginBottom:8}}>
+                <span className="be-label">B/E Spread</span>
+                <span className="be-value" style={{marginLeft:12}}>{((hbtFeeA+hbtFeeB)*100).toFixed(3)}%</span>
+              </div>
+              <div className="bt-actions">
+                <button type="button" className="bb-btn" onClick={handleRunHistoricalBacktest} disabled={hbtStatus === 'running'}>
+                  {hbtStatus === 'running' ? 'Fetching…' : 'Run Backtest'}
+                </button>
+                {hbtResult && hbtStatus === 'done' && (
+                  <button type="button" className="bb-btn-secondary" onClick={handleExportExcel}>Export Excel</button>
+                )}
+                {hbtStatus === 'running' && <span className="spinner" />}
+                {hbtError && <span className="bt-error">{hbtError}</span>}
+              </div>
+            </div>
+
             {hbtStatus === 'running' && (
-              <div className="card" style={{ textAlign: 'center', padding: 40 }}>
-                <div className="config-label" style={{ fontSize: 15 }}>
-                  Fetching real 1-minute OHLCV from Bitstamp &amp; Binance…
-                </div>
-                <div className="config-hint" style={{ marginTop: 10 }}>
-                  Depending on the date range this takes 5–30 seconds (live exchange API calls, no pre-cached data).
-                </div>
+              <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)',padding:24,textAlign:'center'}}>
+                <div style={{fontSize:'var(--font-size-sm)',color:'var(--text-secondary)'}}>Fetching real 1-minute OHLCV from Bitstamp &amp; Binance…</div>
+                <div style={{marginTop:8,fontSize:'var(--font-size-xs)',color:'var(--text-muted)'}}>Depending on date range this takes 5–30 seconds (live API calls).</div>
               </div>
             )}
 
-            {/* ── Results ───────────────────────────────────────────── */}
             {hbtResult && hbtStatus === 'done' && (() => {
-              const s = hbtResult.summary;
-              const netPos = s.total_pnl_eur >= 0;
-              const beStr  = `${s.breakeven_spread_pct?.toFixed(3)}%`;
+              // P6: dual-scenario result shape { realistic, upper_bound, meta }
+              const real = hbtResult.realistic;
+              const ub   = hbtResult.upper_bound;
+              const meta = hbtResult.meta ?? {};
+              if (!real) return null;
+
+              const rs = real.summary;
+              const us = ub?.summary;
+              const netPos = rs.total_pnl_eur >= 0;
+              const beStr  = `${rs.breakeven_spread_pct?.toFixed(3)}%`;
+              const fxTag  = meta.fx_granularity === '1m' ? '1m intraday' : meta.fx_granularity === 'none-eur-native' ? 'native EUR' : 'daily fallback ⚠';
+              const ec     = rs.exec_costs ?? {};
+
+              const kpiCard = (label, val, cls) => (
+                <div className="bt-kpi-cell" key={label}>
+                  <div className="bt-kpi-label">{label}</div>
+                  <div className={`bt-kpi-value ${cls}`}>{val ?? '—'}</div>
+                </div>
+              );
+
               return (
-                <>
-                  {/* ── Summary KPI strip ─────────────────────────────── */}
-                  <section>
-                    <h2 className="section-header">
-                      Results — {s.symbol} · {s.start_dt?.slice(0,10)} → {s.end_dt?.slice(0,10)}
-                      {' '}({s.duration_hours}h · {s.candles_processed?.toLocaleString()} candles)
-                    </h2>
+                <div className="bt-results">
 
-                    {/* Row 1: P&L trio — always shows gross → fees → net so viewer can verify */}
-                    <div className="market-overview" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 8 }}>
-                      {[
-                        ['Gross PnL',  `€${s.gross_pnl_eur?.toFixed(4)}`,  s.gross_pnl_eur >= 0 ? 'positive' : 'negative', 'Price gain before fees'],
-                        ['Total Fees', `−€${s.total_fees_eur?.toFixed(4)}`, 'negative', 'Both legs combined'],
-                        ['Net PnL',   `€${s.total_pnl_eur?.toFixed(4)}`,   netPos ? 'positive' : 'negative', 'Gross − Fees (exact)'],
-                      ].map(([label, val, cls, sub]) => (
-                        <div className="card" key={label}>
-                          <div className="card-title">{label}</div>
-                          <div className={`card-value ${cls}`} style={{ fontSize: 22 }}>{val ?? '—'}</div>
-                          <div className="card-subvalue">{sub}</div>
-                        </div>
-                      ))}
-                    </div>
+                  {/* ── Scenario banner ──────────────────────────────── */}
+                  <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)',padding:'6px 12px',marginBottom:8,fontSize:'var(--font-size-xs)',color:'var(--text-secondary)',display:'flex',gap:16,flexWrap:'wrap',alignItems:'center'}}>
+                    <span><strong style={{color:'var(--text-primary)'}}>Tier:</strong> {rs.tier_label}</span>
+                    <span><strong style={{color:'var(--text-primary)'}}>FX:</strong> {fxTag}</span>
+                    <span><strong style={{color:'var(--text-primary)'}}>Half-spread:</strong> A={ec.half_spread_bps_venue_a} bps · B={ec.half_spread_bps_venue_b} bps</span>
+                    <span><strong style={{color:'var(--text-primary)'}}>Slippage:</strong> {ec.slippage_bps} bps</span>
+                    <span style={{marginLeft:'auto',color:'var(--text-muted)'}}>Fills: bar i+1 (1-min lag) · No look-ahead</span>
+                  </div>
 
-                    {/* Row 2: operational metrics */}
-                    <div className="market-overview" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-                      {[
-                        ['Total Trades',    s.total_trades,                                   '',         ''],
-                        ['Win Rate',        `${s.win_rate_pct?.toFixed(1)}%`,                 s.win_rate_pct > 50 ? 'positive' : '', ''],
-                        ['Max Drawdown',    `€${s.max_drawdown_eur?.toFixed(4)}`,             'negative', ''],
-                        ['Allocated VaR',  `€${s.capital_eur?.toLocaleString()} / leg`,       '',         ''],
-                      ].map(([label, val, cls]) => (
-                        <div className="card" key={label}>
-                          <div className="card-title">{label}</div>
-                          <div className={`card-value ${cls}`} style={{ fontSize: 18 }}>{val ?? '—'}</div>
-                        </div>
-                      ))}
-                    </div>
+                  {/* ── REALISTIC headline KPI row ───────────────────── */}
+                  <div style={{marginBottom:4,fontSize:'var(--font-size-xs)',color:'#4FC3F7',fontWeight:600,letterSpacing:'0.06em'}}>REALISTIC (bid-ask + slippage costs applied)</div>
+                  <div className="bt-kpi-row" style={{marginBottom:10}}>
+                    {[
+                      ['Gross PnL',    `€${rs.gross_pnl_eur?.toFixed(4)}`,   rs.gross_pnl_eur >= 0 ? 'pnl-pos' : 'pnl-neg'],
+                      ['Total Fees',   `−€${rs.total_fees_eur?.toFixed(4)}`,  'pnl-neg'],
+                      ['Net PnL',      `€${rs.total_pnl_eur?.toFixed(4)}`,    netPos ? 'pnl-pos' : 'pnl-neg'],
+                      ['Total Trades', rs.total_trades,                        ''],
+                      ['Wins / Losses',`${rs.win_trades} / ${rs.loss_trades}`, ''],
+                      ['Win Rate',     `${rs.win_rate_pct?.toFixed(1)}%`,      rs.win_rate_pct < 100 ? '' : 'pnl-neg'],
+                      ['Max Drawdown', `€${rs.max_drawdown_eur?.toFixed(4)}`,  'pnl-neg'],
+                      ['Sharpe (daily, ann.)', rs.sharpe_daily_ann != null ? rs.sharpe_daily_ann.toFixed(3) : 'n/a', ''],
+                    ].map(([label, val, cls]) => kpiCard(label, val, cls))}
+                  </div>
 
-                    {/* Microstructure parameter table */}
-                    <div className="card" style={{ marginTop: 10, padding: '14px 18px' }}>
-                      <div className="card-title" style={{ marginBottom: 10 }}>Strategy Parameters &amp; Operational Safeguards</div>
-                      <table className="param-table">
-                        <thead>
-                          <tr><th>Parameter</th><th>Value</th><th>Operational Safeguard</th></tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>Signal threshold</td>
-                            <td>{s.zscore_threshold}σ rolling z-score</td>
-                            <td>Adaptive volatility tracking</td>
-                          </tr>
-                          <tr>
-                            <td>Lookback window</td>
-                            <td>{s.zscore_window_min} min ({s.candles_processed?.toLocaleString()} intervals)</td>
-                            <td>1-min OHLCV replay (not tick data)</td>
-                          </tr>
-                          <tr>
-                            <td>Combined friction drag</td>
-                            <td>{(s.breakeven_spread_pct)?.toFixed(3)}% ({((s.venue_a_taker_pct ?? 0) + (s.venue_b_taker_pct ?? 0)).toFixed(3)} bp)</td>
-                            <td>Break-even gate on every trade</td>
-                          </tr>
-                          <tr>
-                            <td>Cooldown window</td>
-                            <td>{s.trade_cooldown_min} min</td>
-                            <td>Toxic flow &amp; mean-reversion guard</td>
-                          </tr>
-                          <tr>
-                            <td>FX conversion</td>
-                            <td>ECB rate via Frankfurter API</td>
-                            <td>Refreshed every 60 s (daily fixing)</td>
-                          </tr>
-                          <tr>
-                            <td>Execution price model</td>
-                            <td>1-min close (no bid-ask simulated)</td>
-                            <td>Understates real cost; treat as lower bound</td>
-                          </tr>
-                          <tr>
-                            <td>Volume weighting</td>
-                            <td>Not applied (volume = 0 in OHLCV replay)</td>
-                            <td>Backtest uses raw z-score only — consistent with live BSDEX trigger</td>
-                          </tr>
-                          <tr>
-                            <td>Data sources</td>
-                            <td colSpan={2}>{s.data_sources}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-
-                  {/* ── Equity curve ─────────────────────────────────── */}
-                  {hbtResult.equity_curve?.length > 1 && (
-                    <section>
-                      <h2 className="section-header">Cumulative Net PnL — EUR</h2>
-                      <div className="card chart-card chart-card-tall">
-                        <div className="chart-container chart-container-tall">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <ComposedChart data={hbtResult.equity_curve} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                              <XAxis dataKey="ts_str" stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
-                                tickFormatter={(v) => v?.slice(11, 16)} />
-                              <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
-                                tickFormatter={(v) => `€${v.toFixed(2)}`} />
-                              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`€${v.toFixed(4)}`, 'Cumulative Net PnL']} />
-                              <ReferenceLine y={0} stroke="#6C757D" strokeDasharray="4 2" />
-                              <Area type="monotone" dataKey="cumulative_pnl" name="Net PnL (€)"
-                                stroke={netPos ? '#198754' : '#DC3545'}
-                                fill={netPos ? '#d1f0e0' : '#fde8ea'}
-                                strokeWidth={2} dot={false} isAnimationActive={false} />
-                            </ComposedChart>
-                          </ResponsiveContainer>
-                        </div>
+                  {/* ── UPPER BOUND secondary row ────────────────────── */}
+                  {us && (
+                    <>
+                      <div style={{marginBottom:4,fontSize:'var(--font-size-xs)',color:'#6B7B8D',fontWeight:600,letterSpacing:'0.06em'}}>UPPER BOUND (mid-price fills — theoretical maximum, no exec costs)</div>
+                      <div className="bt-kpi-row" style={{marginBottom:14,opacity:0.75}}>
+                        {[
+                          ['Gross PnL',    `€${us.gross_pnl_eur?.toFixed(4)}`,  us.gross_pnl_eur >= 0 ? 'pnl-pos' : 'pnl-neg'],
+                          ['Total Fees',   `−€${us.total_fees_eur?.toFixed(4)}`, 'pnl-neg'],
+                          ['Net PnL',      `€${us.total_pnl_eur?.toFixed(4)}`,   us.total_pnl_eur >= 0 ? 'pnl-pos' : 'pnl-neg'],
+                          ['Total Trades', us.total_trades,                       ''],
+                          ['Wins / Losses',`${us.win_trades} / ${us.loss_trades}`,''],
+                          ['Win Rate',     `${us.win_rate_pct?.toFixed(1)}%`,     ''],
+                          ['Max Drawdown', `€${us.max_drawdown_eur?.toFixed(4)}`, 'pnl-neg'],
+                          ['Sharpe (daily, ann.)', us.sharpe_daily_ann != null ? us.sharpe_daily_ann.toFixed(3) : 'n/a', ''],
+                        ].map(([label, val, cls]) => kpiCard(label, val, cls))}
                       </div>
-                    </section>
+                    </>
                   )}
 
-                  {/* ── Spread + Z-score charts ───────────────────────── */}
-                  {hbtResult.spread_series?.length > 1 && (
-                    <section className="charts-stack">
-                      <div className="card chart-card chart-card-tall">
-                        <div className="card-title">Historical Spread % — Bitstamp vs Binance→EUR</div>
-                        <p className="chart-legend-hint">
-                          Positive = Bitstamp expensive (sell A, buy B). Dashed lines = ±{beStr} break-even.
-                          Spread must exceed break-even for a trade to fire.
-                        </p>
-                        <div className="chart-container chart-container-tall">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <ComposedChart data={hbtResult.spread_series} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                              <XAxis dataKey="ts_str" stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
-                                tickFormatter={(v) => v?.slice(11, 16)} />
-                              <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
+                  {/* ── Charts (realistic scenario) ──────────────────── */}
+                  {real.equity_curve?.length > 1 && (
+                    <div className="bt-chart-grid">
+                      <div className="bt-chart-box">
+                        <div className="bt-chart-title">Cumulative Net PnL — Realistic (EUR)</div>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <ComposedChart data={real.equity_curve} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                            <CartesianGrid stroke="#1E2736" strokeDasharray="3 3" />
+                            <XAxis dataKey="ts_str" tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                              axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
+                              tickFormatter={(v) => v?.slice(11,16)} />
+                            <YAxis tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                              axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
+                              tickFormatter={(v) => `€${v.toFixed(2)}`} />
+                            <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`€${v.toFixed(4)}`, 'Net PnL']} />
+                            <ReferenceLine y={0} stroke="#3D4F63" strokeWidth={0.5} />
+                            <Area type="monotone" dataKey="cumulative_pnl" name="Net PnL (€)"
+                              stroke={netPos ? '#00B060' : '#FF3B3B'} fill={netPos ? 'rgba(0,176,96,0.08)' : 'rgba(255,59,59,0.08)'}
+                              strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+                      {real.spread_series?.length > 1 && (
+                        <div className="bt-chart-box">
+                          <div className="bt-chart-title">Historical Spread % — {rs.bitstamp_symbol} vs {rs.world_symbol}</div>
+                          <ResponsiveContainer width="100%" height={200}>
+                            <ComposedChart data={real.spread_series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                              <CartesianGrid stroke="#1E2736" strokeDasharray="3 3" />
+                              <XAxis dataKey="ts_str" tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                                axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
+                                tickFormatter={(v) => v?.slice(11,16)} />
+                              <YAxis tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                                axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
                                 tickFormatter={(v) => `${v.toFixed(3)}%`} />
-                              <Tooltip contentStyle={tooltipStyle}
-                                formatter={(v, n) => [typeof v === 'number' ? `${v.toFixed(4)}${n === 'Spread %' ? '%' : ''}` : v, n]} />
-                              <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" />
-                              <ReferenceLine y={(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1.5}
-                                label={{ value: `+B/E ${beStr}`, position: 'insideTopRight', fontSize: 9, fill: '#DC3545' }} />
-                              <ReferenceLine y={-(hbtFeeA + hbtFeeB) * 100} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1.5}
-                                label={{ value: `-B/E`, position: 'insideBottomRight', fontSize: 9, fill: '#DC3545' }} />
+                              <Tooltip contentStyle={tooltipStyle} />
+                              <ReferenceLine y={0} stroke="#3D4F63" strokeWidth={0.5} />
+                              <ReferenceLine y={(hbtFeeA+hbtFeeB)*100} stroke="#FF8C00" strokeDasharray="4 4"
+                                label={{ value: `B/E ${beStr}`, fill: '#FF8C00', fontSize: 9 }} />
+                              <ReferenceLine y={-(hbtFeeA+hbtFeeB)*100} stroke="#FF8C00" strokeDasharray="4 4" />
                               <Area type="monotone" dataKey="spread_pct" name="Spread %" dot={false} strokeWidth={1.5}
-                                stroke="#0D6EFD" fill="#DBEAFE" fillOpacity={0.35} isAnimationActive={false} />
+                                stroke="#4FC3F7" fill="rgba(79,195,247,0.08)" isAnimationActive={false} />
                             </ComposedChart>
                           </ResponsiveContainer>
                         </div>
-                      </div>
-
-                      <div className="card chart-card chart-card-tall">
-                        <div className="card-title">Raw Z-Score vs Adaptive Threshold — {s.zscore_window_min}-min rolling</div>
-                        <p className="chart-legend-hint">
-                          <strong>Trade trigger:</strong> |z-score| ≥ threshold <em>and</em> |spread| &gt; {beStr}.
-                          The z-score here is the raw rolling z-score — identical to the quantity used in live mode
-                          for BSDEX (volume weighting is not applied, since Bitstamp REST volumes are polled, not streamed).
-                        </p>
-                        <div className="chart-container chart-container-tall">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={hbtResult.spread_series} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                              <XAxis dataKey="ts_str" stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }}
-                                tickFormatter={(v) => v?.slice(11, 16)} />
-                              <YAxis stroke="#6C757D" fontSize={10} tick={{ fill: '#6C757D' }} />
-                              <Tooltip contentStyle={tooltipStyle} />
-                              <Legend />
-                              <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" />
-                              <Line type="monotone" dataKey="z_score" name="Raw Z-Score (trigger qty)" stroke="#198754"
-                                dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={false} />
-                              <Line type="monotone" dataKey="threshold" name={`Threshold (${s.zscore_threshold}σ)`} stroke="#DC3545"
-                                dot={false} strokeWidth={1.5} strokeDasharray="6 4" isAnimationActive={false} />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </section>
+                      )}
+                    </div>
+                  )}
+                  {real.spread_series?.length > 1 && (
+                    <div className="bt-chart-box">
+                      <div className="bt-chart-title">Raw Z-Score vs Threshold — {rs.zscore_window_min}-min rolling</div>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <LineChart data={real.spread_series} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
+                          <CartesianGrid stroke="#1E2736" strokeDasharray="3 3" />
+                          <XAxis dataKey="ts_str" tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                            axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }}
+                            tickFormatter={(v) => v?.slice(11,16)} />
+                          <YAxis tick={{ fill: '#6B7B8D', fontSize: 9, fontFamily: 'IBM Plex Mono' }}
+                            axisLine={{ stroke: '#1E2736' }} tickLine={{ stroke: '#1E2736' }} />
+                          <Tooltip contentStyle={tooltipStyle} />
+                          <Legend iconSize={10} wrapperStyle={{ fontSize:10, color:'#6B7B8D' }} />
+                          <ReferenceLine y={0} stroke="#3D4F63" strokeWidth={0.5} />
+                          <Line type="monotone" dataKey="z_score" name="Raw Z-Score" stroke="#00B060" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="threshold" name={`Threshold (${rs.zscore_threshold}σ)`} stroke="#FF3B3B" dot={false} strokeWidth={1} strokeDasharray="6 4" isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
                   )}
 
-                  {/* ── Trade log ────────────────────────────────────── */}
-                  {hbtResult.trades?.length > 0 ? (
-                    <section className="activity-section">
-                      <div className="card">
-                        <div className="card-title">
-                          Trade Log — {hbtResult.trades.length} trade{hbtResult.trades.length !== 1 ? 's' : ''} executed
-                          <button type="button" className="btn btn-secondary"
-                            onClick={handleExportExcel}
-                            style={{ float: 'right', fontSize: 12, padding: '3px 10px' }}>
-                            Export to Excel
-                          </button>
-                        </div>
-                        <div className="signal-table-wrap">
-                          <table className="signal-table">
-                            <thead>
-                              <tr>
-                                <th>Time (UTC)</th>
-                                <th>Direction</th>
-                                <th>Spread %</th>
-                                <th>Z-Score</th>
-                                <th>Price A (€)</th>
-                                <th>Price B (€)</th>
-                                <th>Amount</th>
-                                <th>Gross (€)</th>
-                                <th>Fees (€)</th>
-                                <th>Net PnL (€)</th>
+                  {/* ── Parameters table ─────────────────────────────── */}
+                  <div className="bt-param-table">
+                    <div className="section-header">Strategy Parameters &amp; Execution Model</div>
+                    <table className="param-table">
+                      <thead><tr><th>Parameter</th><th>Value</th><th>Note</th></tr></thead>
+                      <tbody>
+                        <tr><td>Scenario shown</td><td>Realistic (headline) + Upper bound (secondary)</td><td>Never present upper bound alone</td></tr>
+                        <tr><td>Signal threshold</td><td>{rs.zscore_threshold}σ rolling z-score</td><td>60-min window</td></tr>
+                        <tr><td>Execution</td><td>Bar i+1 fills (1-min lag)</td><td>P2: no look-ahead bias</td></tr>
+                        <tr><td>Exec costs (realistic)</td><td>HS A={ec.half_spread_bps_venue_a} bps · HS B={ec.half_spread_bps_venue_b} bps · Slip {ec.slippage_bps} bps</td><td>Mid→executable price adjustment</td></tr>
+                        <tr><td>Break-even gate</td><td>{rs.breakeven_spread_pct?.toFixed(3)}%</td><td>Applied to adjusted prices</td></tr>
+                        <tr><td>Cooldown</td><td>{rs.trade_cooldown_min} min</td><td>Toxic flow guard</td></tr>
+                        <tr><td>FX</td><td>{fxTag}</td><td>Binance EURUSDT 1m primary; daily ECB fallback</td></tr>
+                        <tr><td>Tier</td><td>{rs.tier_label}</td><td>P7: >&nbsp;$20M default; >&nbsp;$1B aspirational</td></tr>
+                        <tr><td>Data</td><td colSpan={2}>{rs.data_sources}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* ── Trade log (realistic) ────────────────────────── */}
+                  {real.trades?.length > 0 ? (
+                    <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)'}}>
+                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 10px',borderBottom:'1px solid var(--border)'}}>
+                        <span className="section-header" style={{margin:0,border:'none',paddingBottom:0}}>
+                          Trade Log — Realistic — {real.trades.length} trade{real.trades.length!==1?'s':''}
+                        </span>
+                        <button type="button" className="bb-btn-secondary" onClick={handleExportExcel}>Export Excel</button>
+                      </div>
+                      <div style={{overflowX:'auto'}}>
+                        <table className="dense-table">
+                          <thead>
+                            <tr>
+                              <th>Time (UTC)</th><th>Direction</th><th>Spread %</th><th>Z-Score</th>
+                              <th className="right">Fill A (€)</th><th className="right">Fill B (€)</th>
+                              <th className="right">Slip bps</th><th className="right">Amount</th>
+                              <th className="right">Gross (€)</th><th className="right">Fees (€)</th>
+                              <th className="right">Net PnL (€)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {real.trades.map((t, i) => (
+                              <tr key={i}>
+                                <td style={{color:'var(--text-muted)'}}>{t.ts_str?.slice(0,16).replace('T',' ')}</td>
+                                <td className="text">{t.direction}</td>
+                                <td className={t.spread_pct > 0 ? 'pnl-pos' : 'pnl-neg'}>{t.spread_pct?.toFixed(4)}%</td>
+                                <td>{t.z_score?.toFixed(3)}</td>
+                                <td className="right">€{t.fill_a_eur?.toFixed(2)}</td>
+                                <td className="right">€{t.fill_b_eur?.toFixed(2)}</td>
+                                <td className="right" style={{color:'var(--text-muted)'}}>{t.slip_bps?.toFixed(2)}</td>
+                                <td className="right">{t.amount?.toFixed(5)}</td>
+                                <td className={`right ${t.gross_eur >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>€{t.gross_eur?.toFixed(4)}</td>
+                                <td className="right pnl-neg">€{t.fees_eur?.toFixed(4)}</td>
+                                <td className={`right ${t.pnl_eur >= 0 ? 'pnl-pos' : 'pnl-neg'}`}><strong>€{t.pnl_eur?.toFixed(4)}</strong></td>
                               </tr>
-                            </thead>
-                            <tbody>
-                              {hbtResult.trades.map((t, i) => (
-                                <tr key={i}>
-                                  <td style={{ fontSize: 11 }}>{t.ts_str?.slice(0, 16).replace('T', ' ')}</td>
-                                  <td className="route-cell" style={{ fontSize: 11 }}>{t.direction}</td>
-                                  <td className={t.spread_pct > 0 ? 'positive' : 'negative'}>{t.spread_pct?.toFixed(4)}%</td>
-                                  <td>{t.z_score?.toFixed(3)}</td>
-                                  <td>€{t.price_a_eur?.toFixed(2)}</td>
-                                  <td>€{t.price_b_eur?.toFixed(2)}</td>
-                                  <td style={{ fontSize: 11 }}>{t.amount?.toFixed(5)}</td>
-                                  <td className={t.gross_eur >= 0 ? 'signal-buy' : 'signal-sell'}>€{t.gross_eur?.toFixed(4)}</td>
-                                  <td className="negative">€{t.fees_eur?.toFixed(4)}</td>
-                                  <td className={t.pnl_eur >= 0 ? 'signal-buy' : 'signal-sell'}>
-                                    <strong>€{t.pnl_eur?.toFixed(4)}</strong>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                    </section>
+                    </div>
                   ) : (
-                    <section>
-                      <div className="card" style={{ textAlign: 'center', padding: 36, color: '#6C757D' }}>
-                        <strong>No trades executed</strong> in this period under the selected fee tier.
-                        <br /><br />
-                        The real historical spread between Bitstamp and Binance did not exceed the
-                        break-even threshold of <strong>{((hbtFeeA + hbtFeeB) * 100).toFixed(3)}%</strong> long enough
-                        to trigger the z-score signal. This is honest — real exchange fees make tight spreads unprofitable.
-                        <br /><br />
-                        Try a lower fee tier (e.g. &gt;$100M volume) or a different date range.
-                      </div>
-                    </section>
+                    <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)',padding:24,textAlign:'center',color:'var(--text-secondary)',fontSize:'var(--font-size-sm)'}}>
+                      <strong>No trades executed</strong> in this period under the selected fee tier.
+                      The executable spread (after half-spread + slippage) did not exceed the break-even threshold of <strong>{beStr}</strong>.
+                      Try a lower fee tier, wider date range, or check the upper-bound row for mid-price signal count.
+                    </div>
                   )}
-                </>
+                </div>
               );
             })()}
           </div>
         )}
+      </div>
 
-        {/* ══════════════════════════════════════════════════════════
-             BSDEX VS WORLD TAB
-            ══════════════════════════════════════════════════════════ */}
-        {activeTab === 'bsdex' && (<>
-
-        {/* ── Section 1: Market Overview ─────────────────────────── */}
-        <section>
-          <h2 className="section-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span>Market Overview — {bsdexMarket === 'btc-eur' ? 'BTC/EUR' : 'ETH/EUR'}</span>
-            <select className="pair-select" value={bsdexMarket} onChange={(e) => setBsdexMarket(e.target.value)}>
-              <option value="btc-eur">BTC/EUR</option>
-              <option value="eth-eur">ETH/EUR</option>
-            </select>
-          </h2>
-          <div className="market-overview">
-            <div className="card">
-              <div className="card-title">{bsdexStatus?.venue_a ?? 'Venue A — Bitstamp (EUR)'}</div>
-              <div className={`card-value price-trend ${bsdexPriceTrend.venueA}`}>
-                {venueAMid != null ? `€${venueAMid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-              </div>
-              <div className="card-subvalue">
-                Bid: €{bsdexMarketData?.a_bid?.toFixed(2) ?? '—'} · Ask: €{bsdexMarketData?.a_ask?.toFixed(2) ?? '—'}
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-title">{bsdexStatus?.venue_b ?? 'Venue B — World (EUR)'}</div>
-              <div className={`card-value price-trend ${bsdexPriceTrend.venueB}`}>
-                {venueBMid != null ? `€${venueBMid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-              </div>
-              <div className="card-subvalue">
-                Bid: €{bsdexMarketData?.b_bid?.toFixed(2) ?? '—'} · Ask: €{bsdexMarketData?.b_ask?.toFixed(2) ?? '—'}
-                {bsdexStatus?.fx_rate_usd_eur ? <> · FX: 1 USD = €{bsdexStatus.fx_rate_usd_eur.toFixed(5)}</> : null}
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-title">EUR Spread</div>
-              <div className={`card-value ${bsdexSpread != null ? (bsdexSpread >= 0 ? 'positive' : 'negative') : ''}`}>
-                {bsdexSpread != null ? `${bsdexSpread >= 0 ? '+' : ''}€${bsdexSpread.toFixed(2)}` : '—'}
-              </div>
-              <div className={`card-subvalue ${bsdexSpreadPct != null ? (bsdexSpreadPct >= 0 ? 'positive' : 'negative') : ''}`}>
-                {bsdexSpreadPct != null ? `${bsdexSpreadPct >= 0 ? '+' : ''}${bsdexSpreadPct.toFixed(4)}%` : ''}
-                <span style={{ marginLeft: 6, color: '#6C757D' }}>(B/E: {bsdexBreakevenPct.toFixed(3)}%)</span>
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-title">Raw Z-Score <span style={{fontSize:11,color:'#6C757D',fontWeight:400}}>(trigger quantity)</span></div>
-              <div className={`zscore-display card-value ${getSignalClass(Math.abs(bsdexZScore ?? 0), bsdexThreshold ?? 1)}`}>
-                {bsdexZScore != null ? bsdexZScore.toFixed(4) : '—'}
-              </div>
-              <div className="card-subvalue">
-                Threshold: {bsdexThreshold?.toFixed(4) ?? '—'}
-                {bsdexSignalTriggered && <span className="positive"> · EXECUTES</span>}
-                {bsdexSignalGated && <span style={{color:'#FFC107'}}> · GATED (spread &lt; B/E)</span>}
-                {bsdexSignalCooldown && <span style={{color:'#6C757D'}}> · COOLDOWN</span>}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Section 2: Transaction Model ────────────────────────── */}
-        <section>
-          <h2 className="section-header">Transaction Model — BSDEX vs World Live State</h2>
-          <div className="txn-flow">
-            {/* SETUP */}
-            <div className="txn-box">
-              <div className="txn-label setup">SETUP</div>
-              <div className="txn-row"><span className="txn-key">Capital per leg</span><span className="txn-val">€{bsdexCapitalEur.toLocaleString()}</span></div>
-              <div className="txn-row">
-                <span className="txn-key">Implied size (A)</span>
-                <span className="txn-val">{venueAMid ? `≈ ${(bsdexCapitalEur / venueAMid).toFixed(5)} ${bsdexBase}` : '—'}</span>
-              </div>
-              <div className="txn-row"><span className="txn-key">Venue A taker</span><span className="txn-val">{(bsdexFeeA * 100).toFixed(3)}%</span></div>
-              <div className="txn-row"><span className="txn-key">Venue B taker</span><span className="txn-val">{(bsdexFeeB * 100).toFixed(3)}%</span></div>
-              <div className="txn-row"><span className="txn-key">Break-even spread</span><span className="txn-val" style={{ color: '#DC3545' }}>&gt; {bsdexBreakevenPct.toFixed(3)}%</span></div>
-              <div className="txn-row"><span className="txn-key">Tier</span><span className="txn-val" style={{ fontSize: 11 }}>{bsdexFeeMode === 'auto' ? bsdexVolumeTiers[bsdexTierIdx]?.label ?? '—' : 'manual'}</span></div>
-            </div>
-
-            <div className="txn-arrow">→</div>
-
-            {/* SIGNAL DETECTED */}
-            <div className="txn-box">
-              <div className="txn-label signal">SIGNAL DETECTED</div>
-              <div className="txn-row"><span className="txn-key">Venue A mid (EUR)</span><span className="txn-val">{venueAMid != null ? `€${venueAMid.toFixed(2)}` : '—'}</span></div>
-              <div className="txn-row"><span className="txn-key">Venue B mid (EUR)</span><span className="txn-val">{venueBMid != null ? `€${venueBMid.toFixed(2)}` : '—'}</span></div>
-              <div className="txn-row">
-                <span className="txn-key">EUR Spread</span>
-                <span className={`txn-val ${bsdexSpread != null ? (bsdexSpread > 0 ? 'positive' : bsdexSpread < 0 ? 'negative' : '') : ''}`}>
-                  {bsdexSpread != null ? `${bsdexSpread >= 0 ? '+' : ''}€${bsdexSpread.toFixed(4)} (${bsdexSpreadPct?.toFixed(4)}%)` : '—'}
+      {/* ══ RIGHT PANEL (BSDEX only) ══════════════════════════════ */}
+      <aside className="right-panel">
+        {activeTab === 'bsdex' && (
+          <>
+            <div className="rp-section">
+              <div className="section-header">Session Stats</div>
+              <div className="rp-row"><span className="rp-label">Total Trades</span><span className="rp-value">{bsdexStatus?.total_trades ?? 0}</span></div>
+              <div className="rp-row"><span className="rp-label">Win Rate</span><span className={`rp-value ${(bsdexStatus?.win_rate_pct ?? 0) >= 50 ? 'pnl-pos' : ''}`}>{bsdexStatus?.win_rate_pct?.toFixed(1) ?? '0.0'}%</span></div>
+              <div className="rp-row">
+                <span className="rp-label">Cum. PnL (€)</span>
+                <span className={`rp-value ${(bsdexStatus?.total_pnl_eur ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>
+                  {(bsdexStatus?.total_pnl_eur ?? 0) >= 0 ? '+' : ''}{bsdexStatus?.total_pnl_eur?.toFixed(4) ?? '0.0000'}
                 </span>
               </div>
-              <div className="txn-row">
-                <span className="txn-key">Z-Score</span>
-                <span className={`txn-val ${getSignalClass(Math.abs(bsdexZScore ?? 0), bsdexThreshold ?? 1)}`}>{bsdexZScore?.toFixed(4) ?? '—'}</span>
-              </div>
-              <div className="txn-row"><span className="txn-key">Threshold</span><span className="txn-val">{bsdexThreshold?.toFixed(4) ?? '—'}</span></div>
-              <div className="txn-row">
-                <span className="txn-key">State</span>
-                <span className={`txn-val ${bsdexSignalTriggered ? 'positive' : bsdexSignalGated ? '' : ''}`}
-                  style={{color: bsdexSignalTriggered ? '#28A745' : bsdexSignalGated ? '#FFC107' : bsdexSignalCooldown ? '#6C757D' : '#ADB5BD'}}>
-                  {bsdexSignalTriggered ? 'SIGNAL — executing'
-                    : bsdexSignalGated ? 'SIGNAL — spread too thin for fees'
-                    : bsdexSignalCooldown ? 'SIGNAL — in cooldown'
-                    : 'HOLD'}
-                </span>
+              <div className="rp-row"><span className="rp-label">Total Fees (€)</span><span className="rp-value pnl-neg">{bsdexStatus?.total_fees_eur?.toFixed(4) ?? '0.0000'}</span></div>
+              <div className="rp-row" style={{marginTop:4}}>
+                <span className="rp-label">Signal State</span>
+                <span className={`tag ${signalTagClass}`}>{signalTagText}</span>
               </div>
             </div>
-
-            <div className="txn-arrow">→</div>
-
-            {/* SIMULTANEOUS EXECUTION */}
-            <div className={`txn-box ${bsdexSignalTriggered ? 'txn-box-active' : ''}`}>
-              <div className="txn-label execution">SIMULTANEOUS EXECUTION</div>
-              {bsdexSignalTriggered ? (
-                <>
-                  {(() => {
-                    const buyOnA  = (bsdexSpread ?? 0) < 0;
-                    const priceA  = buyOnA ? bsdexMarketData?.a_ask : bsdexMarketData?.a_bid;
-                    const priceB  = buyOnA ? bsdexMarketData?.b_bid : bsdexMarketData?.b_ask;
-                    const amtA    = priceA ? (bsdexCapitalEur / priceA).toFixed(5) : '?';
-                    const amtB    = priceB ? (bsdexCapitalEur / priceB).toFixed(5) : '?';
-                    return buyOnA ? (
-                      <>
-                        <div className="txn-exec-leg buy">
-                          <span className="exec-side">BUY</span> {amtA} {bsdexBase} on Venue A<br />
-                          <span className="exec-price">@ €{priceA?.toFixed(2)} · cost ≈ €{priceA ? (bsdexCapitalEur * (1 + bsdexFeeA)).toFixed(2) : '?'}</span>
-                        </div>
-                        <div className="txn-exec-leg sell">
-                          <span className="exec-side">SELL</span> {amtB} {bsdexBase} on Venue B<br />
-                          <span className="exec-price">@ €{priceB?.toFixed(2)} · proceeds ≈ €{priceB ? (bsdexCapitalEur * (1 - bsdexFeeB)).toFixed(2) : '?'}</span>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="txn-exec-leg sell">
-                          <span className="exec-side">SELL</span> {amtA} {bsdexBase} on Venue A<br />
-                          <span className="exec-price">@ €{priceA?.toFixed(2)} · proceeds ≈ €{priceA ? (bsdexCapitalEur * (1 - bsdexFeeA)).toFixed(2) : '?'}</span>
-                        </div>
-                        <div className="txn-exec-leg buy">
-                          <span className="exec-side">BUY</span> {amtB} {bsdexBase} on Venue B<br />
-                          <span className="exec-price">@ €{priceB?.toFixed(2)} · cost ≈ €{priceB ? (bsdexCapitalEur * (1 + bsdexFeeB)).toFixed(2) : '?'}</span>
-                        </div>
-                      </>
-                    );
-                  })()}
-                  <div className="txn-result">Net position: market-neutral. EUR spread captured.</div>
-                </>
-              ) : bsdexSignalGated ? (
-                <div className="txn-waiting" style={{borderColor:'#856404',color:'#856404',background:'rgba(255,193,7,0.08)'}}>
-                  <strong>Z-score threshold crossed</strong> but spread ({bsdexSpreadPct != null ? Math.abs(bsdexSpreadPct).toFixed(4) : '?'}%) is below break-even ({bsdexBreakevenPct.toFixed(3)}%). No trade — spread does not cover fees.
+            <div className="rp-section">
+              <div className="section-header">Fee Configuration</div>
+              <div className="fee-grid">
+                <div className="fee-mode-toggle">
+                  <button className={`fee-mode-btn ${bsdexFeeMode === 'auto' ? 'active' : ''}`} onClick={() => handleBsdexFeeModeChange('auto')}>Auto</button>
+                  <button className={`fee-mode-btn ${bsdexFeeMode === 'manual' ? 'active' : ''}`} onClick={() => handleBsdexFeeModeChange('manual')}>Manual</button>
                 </div>
-              ) : bsdexSignalCooldown ? (
-                <div className="txn-waiting" style={{borderColor:'#6C757D',color:'#6C757D',background:'rgba(108,117,125,0.08)'}}>
-                  Signal active but within post-trade cooldown window. Waiting before next trade…
-                </div>
-              ) : (
-                <div className="txn-waiting">
-                  Waiting: |z-score| ≥ threshold <em>and</em> |spread| &gt; {bsdexBreakevenPct.toFixed(3)}% (break-even)…
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ── Methodology Disclosure ──────────────────────────── */}
-        <section>
-          <details className="methodology-disclosure">
-            <summary>Monitor Methodology &amp; Model Assumptions</summary>
-            <div className="methodology-body">
-              <div className="methodology-col">
-                <h4>Architecture</h4>
-                <p>This is a <strong>latency-tolerant statistical arbitrage monitor</strong> — not an HFT execution engine. It polls Bitstamp and Binance REST endpoints every ~1 s. The spread dislocation exploited (BSDEX/Bitstamp structural lag, lower liquidity) occurs on a seconds-to-minutes time scale, which a 1 s loop can genuinely capture.</p>
-              </div>
-              <div className="methodology-col">
-                <h4>Signal Logic</h4>
-                <p><strong>Trigger quantity:</strong> raw z-score of the EUR price spread over a rolling window. Adaptive threshold adjusts for spread volatility. Bitstamp REST volumes are polled at ~1 s intervals rather than streamed tick-by-tick, so volume weighting is not applied — the raw z-score drives both display and trade decisions, keeping the signal definition consistent with the historical backtest.</p>
-              </div>
-              <div className="methodology-col">
-                <h4>FX Conversion</h4>
-                <p>Binance USDT prices are converted to EUR via the ECB rate refreshed every 60 s from api.frankfurter.app. Intraday EUR/USD drift (typically 1–3 bp/hr) represents an unhedged basis risk on each leg.</p>
-              </div>
-            </div>
-          </details>
-        </section>
-
-        {/* ── Section 3: Charts ───────────────────────────────────── */}
-        <section className="charts-stack">
-          <div className="card chart-card chart-card-tall">
-            <div className="card-title">EUR Cross-Exchange Spread — {bsdexMarket.toUpperCase()}</div>
-            <p className="chart-legend-hint">
-              Venue A bid − Venue B ask as % of world mid-price. Positive → Venue A expensive (sell A, buy B).
-              <span style={{ marginLeft: 8, color: '#DC3545' }}>
-                Dashed lines = ±{bsdexBreakevenPct.toFixed(3)}% break-even (trade fires only above this).
-              </span>
-            </p>
-            {bsdexChartData.length === 0 ? (
-              <div className="skeleton skeleton-chart-tall" />
-            ) : (
-              <div className="chart-container chart-container-tall">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={bsdexChartData} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <YAxis stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} tickFormatter={(v) => `${v.toFixed(3)}%`} />
-                    <Tooltip content={<BsdexSpreadTooltip />} />
-                    <ReferenceLine y={0} stroke="#ADB5BD" strokeDasharray="4 2" label={{ value: 'Par', position: 'insideLeft', fontSize: 10, fill: '#ADB5BD' }} />
-                    <ReferenceLine y={bsdexBreakevenPct} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1}
-                      label={{ value: 'B/E', position: 'insideTopRight', fontSize: 9, fill: '#DC3545' }} />
-                    <ReferenceLine y={-bsdexBreakevenPct} stroke="#DC3545" strokeDasharray="3 3" strokeWidth={1} />
-                    <Area type="monotone" dataKey="spreadPct" name="Spread %" dot={false} strokeWidth={2}
-                      stroke="#0D6EFD" fill="#DBEAFE" fillOpacity={0.4} isAnimationActive={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-          <div className="card chart-card chart-card-tall">
-            <div className="card-title">Signal Engine — Z-Score vs Adaptive Threshold</div>
-            <p className="chart-legend-hint">Trade fires when green line (z-score) crosses the red dashed adaptive threshold.</p>
-            {bsdexChartData.length === 0 ? (
-              <div className="skeleton skeleton-chart-tall" />
-            ) : (
-              <div className="chart-container chart-container-tall">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={bsdexChartData} margin={{ top: 12, right: 24, left: 8, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-                    <XAxis dataKey="time" stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <YAxis stroke="#6C757D" fontSize={11} tick={{ fill: '#6C757D' }} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Legend />
-                    <Line type="monotone" dataKey="zScore" name="Z-Score" stroke="#198754" dot={false} strokeWidth={2.5} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="threshold" name="Adaptive Threshold" stroke="#DC3545" dot={false} strokeWidth={2} strokeDasharray="6 4" isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* ── Section 4: Trade Activity ────────────────────────────── */}
-        <section className="activity-section">
-          <div className="card">
-            <div className="card-title">Trade Activity (Simulated, EUR)</div>
-            <p className="chart-legend-hint">
-              All prices and PnL in EUR. Fees paid this session:{' '}
-              <strong>€{bsdexStatus?.total_fees_eur?.toFixed(4) ?? '0.0000'}</strong>.
-              Trades only fire when |spread| &gt; break-even ({bsdexBreakevenPct.toFixed(3)}%) AND z-score ≥ threshold.
-            </p>
-            <div className="signal-table-wrap">
-              {bsdexTrades.length === 0 ? (
-                <div className="empty-state">
-                  No trades yet — spread must exceed {bsdexBreakevenPct.toFixed(3)}% and z-score must reach threshold.
-                </div>
-              ) : (
-                <table className="signal-table">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Market</th>
-                      <th>Route</th>
-                      <th>Amount</th>
-                      <th>Gross (€)</th>
-                      <th>Fees (€)</th>
-                      <th>Net (€)</th>
-                      <th>Tier</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bsdexTrades.map((t, i) => {
-                      const gross = (t.pnl_eur ?? 0) + (t.fees_eur ?? 0);
-                      return (
-                        <tr key={i}>
-                          <td style={{ fontSize: 11 }}>{t.timestamp?.slice(11, 19) ?? '—'}</td>
-                          <td>{t.market?.toUpperCase()}</td>
-                          <td className="route-cell">{t.buy_exchange} → {t.sell_exchange}</td>
-                          <td style={{ fontSize: 11 }}>{t.amount?.toFixed(5) ?? '—'}</td>
-                          <td className={gross >= 0 ? 'signal-buy' : 'signal-sell'}>{gross.toFixed(4)}</td>
-                          <td className="negative">{t.fees_eur?.toFixed(4) ?? '—'}</td>
-                          <td className={t.pnl_eur >= 0 ? 'signal-buy' : 'signal-sell'}>{t.pnl_eur?.toFixed(4) ?? '—'}</td>
-                          <td style={{ fontSize: 10, color: '#6C757D' }}>{t.tier ?? '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ── Section 5: Fee & Capital Config + Session Stats ────── */}
-        <section className="bottom-section">
-
-          {/* Fee & Capital Configuration */}
-          <div className="card config-panel">
-            <div className="card-title">Fee &amp; Capital Configuration</div>
-
-            {/* Mode toggle */}
-            <div className="fee-mode-row">
-              <label className="fee-mode-opt">
-                <input type="radio" name="bsdexFeeMode" value="auto" checked={bsdexFeeMode === 'auto'} onChange={() => handleBsdexFeeModeChange('auto')} />
-                {' '}Volume tier (auto)
-              </label>
-              <label className="fee-mode-opt">
-                <input type="radio" name="bsdexFeeMode" value="manual" checked={bsdexFeeMode === 'manual'} onChange={() => handleBsdexFeeModeChange('manual')} />
-                {' '}Manual override
-              </label>
-            </div>
-
-            {/* Tier dropdown — only visible in auto mode */}
-            {bsdexFeeMode === 'auto' && (
-              <div className="config-field">
-                <label className="config-label" htmlFor="bsdex-tier-select">30-Day USD Trading Volume</label>
-                <select
-                  id="bsdex-tier-select"
-                  className="config-input"
-                  value={bsdexTierIdx}
-                  onChange={(e) => handleBsdexTierChange(parseInt(e.target.value))}
-                >
-                  {bsdexVolumeTiers.map((t, i) => (
-                    <option key={i} value={i}>
-                      {t.label} — Bitstamp: {(t.bitstamp_taker * 100).toFixed(2)}% · LMAX: {(t.lmax_taker * 100).toFixed(2)}% · B/E: {((t.bitstamp_taker + t.lmax_taker) * 100).toFixed(2)}%
-                    </option>
-                  ))}
-                </select>
-                {bsdexVolumeTiers[bsdexTierIdx]?.note && (
-                  <div className="config-hint" style={{ color: '#856404' }}>{bsdexVolumeTiers[bsdexTierIdx].note}</div>
-                )}
-              </div>
-            )}
-
-            {/* Per-venue fee inputs */}
-            <div className="fee-inputs-row">
-              <div className="fee-input-group">
-                <label className="config-label">Venue A — Bitstamp taker</label>
-                <div className="fee-input-wrap">
-                  <input
-                    type="number" className="config-input fee-pct-input"
-                    min="0" max="5" step="0.001"
-                    value={(bsdexFeeA * 100).toFixed(3)}
-                    readOnly={bsdexFeeMode === 'auto'}
-                    style={bsdexFeeMode === 'auto' ? { background: '#F8F9FA', cursor: 'not-allowed' } : {}}
-                    onChange={(e) => setBsdexFeeA(Math.max(0, parseFloat(e.target.value) || 0) / 100)}
-                  />
-                  <span className="fee-unit">%</span>
-                </div>
-              </div>
-              <div className="fee-input-group">
-                <label className="config-label">Venue B — LMAX Digital taker</label>
-                <div className="fee-input-wrap">
-                  <input
-                    type="number" className="config-input fee-pct-input"
-                    min="0" max="5" step="0.001"
-                    value={(bsdexFeeB * 100).toFixed(3)}
-                    readOnly={bsdexFeeMode === 'auto'}
-                    style={bsdexFeeMode === 'auto' ? { background: '#F8F9FA', cursor: 'not-allowed' } : {}}
-                    onChange={(e) => setBsdexFeeB(Math.max(0, parseFloat(e.target.value) || 0) / 100)}
-                  />
-                  <span className="fee-unit">%</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Break-even summary */}
-            <div className="breakeven-banner">
-              Break-even spread: <strong>{bsdexBreakevenPct.toFixed(3)}%</strong>
-              <span className="breakeven-detail">({(bsdexFeeA * 100).toFixed(3)}% + {(bsdexFeeB * 100).toFixed(3)}% combined taker)</span>
-            </div>
-
-            {/* Capital per leg */}
-            <div className="config-field" style={{ marginTop: 12 }}>
-              <label className="config-label" htmlFor="bsdex-capital-input">Capital per leg (EUR)</label>
-              <div className="fee-input-wrap">
-                <input
-                  id="bsdex-capital-input"
-                  type="number" className="config-input fee-pct-input"
-                  min="10" step="100"
-                  value={bsdexCapitalEur}
-                  onChange={(e) => setBsdexCapitalEur(parseFloat(e.target.value) || 1000)}
-                />
-                <span className="fee-unit">EUR</span>
-              </div>
-              <div className="config-hint">
-                Deployed per venue per trade.{' '}
-                {venueAMid ? `≈ ${(bsdexCapitalEur / venueAMid).toFixed(5)} ${bsdexBase} @ Venue A current price` : ''}
-              </div>
-            </div>
-
-            {/* Apply button */}
-            <div className="config-actions">
-              <button type="button" className="btn btn-apply" onClick={handleBsdexApplyConfig} disabled={bsdexConfigSaving}>
-                {bsdexConfigSaving ? 'Applying…' : 'Apply to Strategy'}
-              </button>
-              {bsdexConfigApplied && <span className="config-success">✓ Applied</span>}
-            </div>
-
-            {/* Reference table — all tiers */}
-            {bsdexVolumeTiers.length > 0 && (
-              <details style={{ marginTop: 14 }}>
-                <summary className="config-label" style={{ cursor: 'pointer' }}>Fee schedule reference (all tiers)</summary>
-                <div className="fee-tier-table-wrap" style={{ marginTop: 8 }}>
-                  <table className="fee-tier-table">
-                    <thead>
-                      <tr>
-                        <th>30-Day Volume</th>
-                        <th>Bitstamp taker</th>
-                        <th>LMAX taker</th>
-                        <th>Break-even</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                {bsdexFeeMode === 'auto' && (
+                  <div className="fee-field">
+                    <label>Volume Tier</label>
+                    <select className="bb-select" value={bsdexTierIdx} onChange={(e) => handleBsdexTierChange(parseInt(e.target.value))}>
                       {bsdexVolumeTiers.map((t, i) => (
-                        <tr key={i} className={i === bsdexTierIdx && bsdexFeeMode === 'auto' ? 'active-tier-row' : ''}>
-                          <td>{t.label}</td>
-                          <td>{(t.bitstamp_taker * 100).toFixed(2)}%</td>
-                          <td>{(t.lmax_taker * 100).toFixed(2)}%</td>
-                          <td>{((t.bitstamp_taker + t.lmax_taker) * 100).toFixed(2)}%</td>
-                        </tr>
+                        <option key={i} value={i}>{t.label} — BS:{(t.bitstamp_taker*100).toFixed(2)}% LM:{(t.lmax_taker*100).toFixed(2)}%</option>
                       ))}
-                    </tbody>
-                  </table>
+                    </select>
+                  </div>
+                )}
+                <div className="fee-field">
+                  <label>Venue A Taker</label>
+                  <div className="fee-input-row">
+                    <input type="number" className="bb-input" min="0" max="5" step="0.001"
+                      value={(bsdexFeeA*100).toFixed(3)} readOnly={bsdexFeeMode === 'auto'}
+                      onChange={(e) => setBsdexFeeA(Math.max(0, parseFloat(e.target.value)||0)/100)} />
+                    <span className="fee-unit-label">%</span>
+                  </div>
                 </div>
-              </details>
+                <div className="fee-field">
+                  <label>Venue B Taker</label>
+                  <div className="fee-input-row">
+                    <input type="number" className="bb-input" min="0" max="5" step="0.001"
+                      value={(bsdexFeeB*100).toFixed(3)} readOnly={bsdexFeeMode === 'auto'}
+                      onChange={(e) => setBsdexFeeB(Math.max(0, parseFloat(e.target.value)||0)/100)} />
+                    <span className="fee-unit-label">%</span>
+                  </div>
+                </div>
+                <div className="be-box">
+                  <span className="be-label">B/E Spread</span>
+                  <span className="be-value">{bsdexBreakevenPct.toFixed(3)}%</span>
+                </div>
+                <div className="fee-field">
+                  <label>Capital (EUR)</label>
+                  <input type="number" className="bb-input" min="100" step="1000" value={bsdexCapitalEur}
+                    onChange={(e) => setBsdexCapitalEur(parseFloat(e.target.value) || 1000)} />
+                </div>
+                <div className="config-apply-row">
+                  <button type="button" className="bb-btn" onClick={handleBsdexApplyConfig} disabled={bsdexConfigSaving}>
+                    {bsdexConfigSaving ? '…' : 'Apply'}
+                  </button>
+                  {bsdexConfigApplied && <span className="config-ok">✓ Applied</span>}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </aside>
+
+      {/* ══ BLOTTER (BSDEX only) ═════════════════════════════════ */}
+      <div className="blotter">
+        {activeTab === 'bsdex' && (
+          <>
+            <div className="blotter-header">
+              <span className="section-header" style={{margin:0,border:'none',paddingBottom:0}}>Trade Blotter</span>
+              <span style={{fontSize:'var(--font-size-xs)',color:'var(--text-muted)'}}>
+                {bsdexTrades.length === 0
+                  ? 'No trades yet — spread must exceed B/E and z-score must reach threshold'
+                  : `${bsdexTrades.length} trade${bsdexTrades.length !== 1 ? 's' : ''} · fees paid: €${bsdexStatus?.total_fees_eur?.toFixed(4) ?? '0.0000'}`}
+              </span>
+            </div>
+            {bsdexTrades.length > 0 && (
+              <table className="dense-table">
+                <thead>
+                  <tr>
+                    <th>Time</th><th>Market</th><th>Route</th>
+                    <th className="right">Amount</th><th className="right">Gross (€)</th>
+                    <th className="right">Fees (€)</th><th className="right">Net (€)</th><th>Tier</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bsdexTrades.map((t, i) => {
+                    const gross = (t.pnl_eur ?? 0) + (t.fees_eur ?? 0);
+                    return (
+                      <tr key={i}>
+                        <td style={{color:'var(--text-muted)'}}>{t.timestamp?.slice(11,19) ?? '—'}</td>
+                        <td className="text">{t.market?.toUpperCase()}</td>
+                        <td className="text" style={{color:'var(--text-secondary)'}}>{t.buy_exchange} → {t.sell_exchange}</td>
+                        <td className="right">{t.amount?.toFixed(5) ?? '—'}</td>
+                        <td className={`right ${gross >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>{gross.toFixed(4)}</td>
+                        <td className="right pnl-neg">{t.fees_eur?.toFixed(4) ?? '—'}</td>
+                        <td className={`right ${(t.pnl_eur ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'}`}><strong>{t.pnl_eur?.toFixed(4) ?? '—'}</strong></td>
+                        <td style={{color:'var(--text-muted)',fontFamily:'var(--font-sans)'}}>{t.tier ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             )}
-          </div>
+          </>
+        )}
+      </div>
 
-          {/* Session Stats */}
-          <div className="card controls-panel">
-            <div className="card-title">Session Stats — BSDEX vs World</div>
-            <div className="stats-grid">
-              <div className="stat-item">
-                <div className="stat-label">Total Trades</div>
-                <div className="stat-value">{bsdexStatus?.total_trades ?? 0}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Signal State</div>
-                <div className={`stat-value signal-state-${bsdexSignalState.toLowerCase()}`}
-                  title={bsdexSignalGated ? 'Z-score threshold crossed but spread insufficient for fees' : bsdexSignalCooldown ? 'In post-trade cooldown' : ''}>
-                  {bsdexSignalState === 'SIGNAL_GATED' ? 'GATED' : bsdexSignalState === 'SIGNAL_COOLDOWN' ? 'COOLDOWN' : bsdexSignalState}
-                </div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Cumulative PnL (€)</div>
-                <div className={`stat-value ${(bsdexStatus?.total_pnl_eur ?? 0) >= 0 ? 'positive' : 'negative'}`}>
-                  {bsdexStatus?.total_pnl_eur?.toFixed(4) ?? '0.0000'}
-                </div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Win Rate</div>
-                <div className="stat-value">{bsdexStatus?.win_rate_pct?.toFixed(1) ?? '0.0'}%</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Total Fees (€)</div>
-                <div className="stat-value negative">{bsdexStatus?.total_fees_eur?.toFixed(4) ?? '0.0000'}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">FX Rate (USD→EUR)</div>
-                <div className="stat-value">{bsdexStatus?.fx_rate_usd_eur?.toFixed(5) ?? '—'}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">Venue A Source</div>
-                <div className="stat-value" style={{ fontSize: 11 }}>{bsdexStatus?.data_source ?? '—'}</div>
-              </div>
-              <div className="stat-item">
-                <div className="stat-label">FX Age</div>
-                <div className="stat-value" style={{ fontSize: 11 }}>
-                  {bsdexStatus?.fx_age_sec != null ? `${Math.round(bsdexStatus.fx_age_sec)}s` : '—'}
-                </div>
-              </div>
-            </div>
+      {/* ══ STATUS BAR ═══════════════════════════════════════════ */}
+      <div className="status-bar">
+        <span>Venue A: Bitstamp EUR (BSDEX proxy)</span>
+        <span className="status-sep">|</span>
+        <span>Venue B: Binance USDT→EUR (LMAX fee model)</span>
+        <span className="status-sep">|</span>
+        <span>FX: ECB/Frankfurter (60s)</span>
+        <span className="status-sep">|</span>
+        <span>All trades simulated</span>
+        <span className="status-sep">|</span>
+        <span>STAT ARB v1.0</span>
+      </div>
 
-            <div className="bsdex-honesty-footer" style={{ marginTop: 16 }}>
-              <strong>Data transparency:</strong>{' '}
-              Venue A = <strong>Bitstamp EUR</strong> public REST (BSDEX proxy — BSDEX API requires authentication).
-              Venue B = <strong>Binance USDT → EUR</strong> via ECB/Frankfurter rate (refreshed every 60 s).
-              LMAX fee model is a published institutional schedule, <em>not</em> a live LMAX connection.
-              <strong> All trades are simulated only.</strong>
-            </div>
-          </div>
-        </section>
-
-        </>)}
-
-
-      </main>
+      </div>{/* end .dashboard */}
     </ThemeProvider>
   );
 }
+
 
 export default function App() {
   return (
