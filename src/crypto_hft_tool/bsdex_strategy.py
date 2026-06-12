@@ -369,22 +369,18 @@ MAX_FX_AGE_SEC = 300          # 5 minutes; beyond this, FX is too stale to trade
 FX_WARN_AGE_SEC = 120         # log a warning after 2 minutes of staleness
 
 # ---------------------------------------------------------------------------
-# Bitstamp order-book REST (cached; for VWAP price-impact estimation)
+# Bitstamp order-book REST fallback (used only until WS connects)
 # ---------------------------------------------------------------------------
 
 class BitstampOrderbookCache:
-    """
-    Caches Bitstamp's full bid/ask depth (top-20) with a short TTL.
-    Used by _estimate_price_impact to compute VWAP clearing prices.
-    REST is fine here: order-book depth changes slowly vs. top-of-book.
-    """
+    """REST fallback (5 s TTL). Used only for the first second before the
+    BitstampDepthWsCache receives its first snapshot."""
     _TTL_SEC = 5.0
 
     def __init__(self):
-        self._books: Dict[str, dict] = {}       # ticker → {"bids":..., "asks":..., "ts":...}
+        self._books: Dict[str, dict] = {}
 
     async def get(self, ticker: str) -> Optional[Dict]:
-        """Return cached book or re-fetch if stale."""
         cached = self._books.get(ticker)
         if cached and (time.time() - cached["ts"]) < self._TTL_SEC:
             return cached["book"]
@@ -393,7 +389,6 @@ class BitstampOrderbookCache:
             async with aiohttp.ClientSession(connector=_system_dns_connector()) as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     d = await resp.json()
-                    # Bitstamp returns lists of ["price", "amount", count]
                     book = {
                         "bids": {Decimal(row[0]): Decimal(row[1]) for row in d.get("bids", [])[:20]},
                         "asks": {Decimal(row[0]): Decimal(row[1]) for row in d.get("asks", [])[:20]},
@@ -401,11 +396,178 @@ class BitstampOrderbookCache:
                     self._books[ticker] = {"book": book, "ts": time.time()}
                     return book
         except Exception as exc:
-            logger.debug(f"[BitstampOB] {ticker} fetch error: {exc}")
+            logger.debug(f"[BitstampOB-REST] {ticker}: {exc}")
             return cached["book"] if cached else None
 
-# Module-level singleton (shared across all BSDEXStrategy instances)
-_bitstamp_ob_cache = BitstampOrderbookCache()
+
+# ---------------------------------------------------------------------------
+# Bitstamp WebSocket depth cache — replaces the 5-second REST polling
+# ---------------------------------------------------------------------------
+
+class BitstampDepthWsCache:
+    """
+    Subscribes to Bitstamp's public order_book WebSocket channel.
+    Delivers full top-100 bid/ask snapshots on every book change
+    (sub-second updates, same latency tier as the Binance depth WS).
+
+    Endpoint:  wss://ws.bitstamp.net
+    Channel:   order_book_{ticker}  e.g. order_book_btceur
+    Protocol:  Bitstamp Pusher-based — subscribe event + data events.
+
+    No authentication required — this is the public order book.
+    """
+    _WS_URL = "wss://ws.bitstamp.net"
+
+    def __init__(self, tickers: List[str]):
+        self._tickers  = tickers          # ["btceur", "etheur"]
+        self._books:   Dict[str, Dict]  = {}    # ticker → {bids, asks}
+        self._updated: Dict[str, float] = {}    # ticker → last update epoch
+        self._running   = False
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def get_book(self, ticker: str) -> Optional[Dict]:
+        """Return the latest order book, or None if not yet received."""
+        return self._books.get(ticker)
+
+    def age_sec(self, ticker: str) -> float:
+        """Seconds since last update (inf = never received)."""
+        ts = self._updated.get(ticker)
+        return (time.time() - ts) if ts else float("inf")
+
+    def _parse_levels(self, raw: list) -> Dict[Decimal, Decimal]:
+        """Parse [[price, amount, …], …] into {Decimal: Decimal}."""
+        out: Dict[Decimal, Decimal] = {}
+        for row in raw[:100]:
+            try:
+                out[Decimal(row[0])] = Decimal(row[1])
+            except Exception:
+                pass
+        return out
+
+    async def run(self):
+        """Connect, subscribe, and maintain live books. Auto-reconnects."""
+        try:
+            import websockets
+        except ImportError:
+            logger.error("[BitstampDepthWS] websockets not installed — "
+                         "falling back to REST-only mode.")
+            return
+
+        self._running = True
+        while self._running:
+            try:
+                async with websockets.connect(
+                    self._WS_URL,
+                    ping_interval=20,
+                    ping_timeout=10,
+                ) as ws:
+                    self._connected = True
+                    logger.info(f"[BitstampDepthWS] Connected → {self._tickers}")
+
+                    for ticker in self._tickers:
+                        await ws.send(json.dumps({
+                            "event": "bts:subscribe",
+                            "data":  {"channel": f"order_book_{ticker}"},
+                        }))
+
+                    async for raw in ws:
+                        if not self._running:
+                            break
+                        try:
+                            msg     = json.loads(raw)
+                            event   = msg.get("event", "")
+                            channel = msg.get("channel", "")
+
+                            if event == "bts:subscription_succeeded":
+                                logger.info(f"[BitstampDepthWS] Subscribed to {channel}")
+                                continue
+                            if event != "data":
+                                continue
+
+                            # "order_book_btceur" → "btceur"
+                            ticker = channel.replace("order_book_", "")
+                            if ticker not in self._tickers:
+                                continue
+
+                            data = msg.get("data", {})
+                            bids = self._parse_levels(data.get("bids", []))
+                            asks = self._parse_levels(data.get("asks", []))
+                            if bids or asks:
+                                self._books[ticker]   = {"bids": bids, "asks": asks}
+                                self._updated[ticker] = time.time()
+                        except Exception as exc:
+                            logger.debug(f"[BitstampDepthWS] Parse error: {exc}")
+
+            except Exception as exc:
+                self._connected = False
+                if self._running:
+                    logger.warning(
+                        f"[BitstampDepthWS] Lost connection "
+                        f"({type(exc).__name__}: {exc}); reconnecting in 3 s"
+                    )
+                    await asyncio.sleep(3)
+
+    def stop(self):
+        self._running   = False
+        self._connected = False
+
+
+# ---------------------------------------------------------------------------
+# Module-level singletons
+# ---------------------------------------------------------------------------
+
+_bitstamp_ob_cache = BitstampOrderbookCache()   # REST fallback
+
+# Tickers derived from config map (e.g. ["btceur", "etheur"])
+_bitstamp_depth_ws_singleton = BitstampDepthWsCache(
+    list(BSDEX_BITSTAMP_MAP.values())
+)
+
+
+# ---------------------------------------------------------------------------
+# VWAP helper — extended to return depth metadata
+# ---------------------------------------------------------------------------
+
+def _vwap_with_meta(
+    orderbook: Dict[str, Dict[Decimal, Decimal]],
+    side: str,          # "buy" → consume asks; "sell" → consume bids
+    amount_base: float,
+) -> Tuple[Optional[float], int, float]:
+    """
+    Walk the order book for a market order of `amount_base` units.
+
+    Returns:
+      (vwap_price, levels_consumed, total_available_eur)
+      vwap_price is None if depth is insufficient.
+    """
+    if not orderbook or amount_base <= 0:
+        return None, 0, 0.0
+    try:
+        book_side = orderbook["bids"] if side == "sell" else orderbook["asks"]
+        prices    = sorted(book_side.keys(), reverse=(side == "sell"))
+        # Total EUR available across all visible levels
+        total_avail = sum(float(book_side[p]) * float(p) for p in prices)
+        remaining   = amount_base
+        total_cost  = 0.0
+        levels      = 0
+        for price in prices:
+            available = float(book_side[price])
+            taken     = min(remaining, available)
+            total_cost += taken * float(price)
+            remaining  -= taken
+            levels     += 1
+            if remaining <= 0:
+                break
+        if remaining > 1e-10:
+            return None, levels, total_avail     # insufficient depth
+        return total_cost / amount_base, levels, total_avail
+    except Exception as exc:
+        logger.debug(f"[VWAPmeta] {exc}")
+        return None, 0, 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -618,8 +780,9 @@ class BSDEXStrategy:
         _binance_symbols = list({v.replace("/", "") for v in BSDEX_MARKET_MAP.values()})
         self._binance_ws = BinanceDepthCache(_binance_symbols)
 
-        # --- Bitstamp order book cache (VWAP for venue A) --------------------
-        self._bitstamp_ob = _bitstamp_ob_cache
+        # --- Bitstamp order book: WS primary + REST fallback -----------------
+        self._bitstamp_ob         = _bitstamp_ob_cache           # REST fallback
+        self._bitstamp_depth_ws   = _bitstamp_depth_ws_singleton # WS primary
 
         # --- BSDEX WS provider (created only if API keys are present) --------
         self._bsdex_ws: Optional[BSDEXWebSocketProvider] = None
@@ -783,37 +946,90 @@ class BSDEXStrategy:
         a_mid = venue_a_q["mid_price"]
         b_mid = venue_b_q["mid_price"]
 
-        # ── 4. VWAP clearing prices (replaces top-of-book illusion) ─────────
+        # ── 4. VWAP clearing prices with depth metadata ──────────────────────
         #   amount_base: how many BTC/ETH units €capital buys at mid
         amount_base = (self._capital_eur / a_mid) if a_mid > 0 else 0.0
 
-        # Venue A VWAP — Bitstamp order book (5 s REST cache)
-        bs_ticker   = BSDEX_BITSTAMP_MAP.get(market)
-        book_a      = await self._bitstamp_ob.get(bs_ticker) if bs_ticker else None
+        # Venue A — Bitstamp WS depth (primary, sub-second); REST (fallback)
+        bs_ticker = BSDEX_BITSTAMP_MAP.get(market)
+        if bs_ticker:
+            book_a = self._bitstamp_depth_ws.get_book(bs_ticker)
+            if book_a is None:
+                # WS hasn't received first snapshot yet (first ~1 s after startup)
+                book_a = await self._bitstamp_ob.get(bs_ticker)
+        else:
+            book_a = None
 
-        # Venue B VWAP — Binance WS depth cache
-        book_b = self._binance_ws.get_orderbook(bn_sym)
-        # Convert Binance book prices from USDT → EUR
-        if book_b and fx_rate:
-            book_b = {
-                "bids": {p * Decimal(str(fx_rate)): q for p, q in book_b["bids"].items()},
-                "asks": {p * Decimal(str(fx_rate)): q for p, q in book_b["asks"].items()},
+        # Venue B — Binance WS depth (100 ms snapshots), converted to EUR
+        book_b_raw = self._binance_ws.get_orderbook(bn_sym)
+        if book_b_raw and fx_rate:
+            fx_dec = Decimal(str(fx_rate))
+            book_b: Optional[Dict] = {
+                "bids": {p * fx_dec: q for p, q in book_b_raw["bids"].items()},
+                "asks": {p * fx_dec: q for p, q in book_b_raw["asks"].items()},
             }
+        else:
+            book_b = None
 
-        # Compute VWAP prices (fall back to top-of-book if depth unavailable)
-        vwap_a_bid = _vwap_clearing_price(book_a, "sell", amount_base) if book_a and amount_base > 0 else None
-        vwap_b_ask = _vwap_clearing_price(book_b, "buy",  amount_base) if book_b and amount_base > 0 else None
+        # VWAP with depth metadata — all four legs, both trade directions
+        #   sell-A / buy-B  direction: consume bids on A, asks on B
+        #   buy-A  / sell-B direction: consume asks on A, bids on B
+        if book_a and amount_base > 0:
+            vwap_a_bid, levels_a,     avail_a_eur = _vwap_with_meta(book_a, "sell", amount_base)
+            vwap_a_ask_r, _la2,       _aa2        = _vwap_with_meta(book_a, "buy",  amount_base)
+        else:
+            vwap_a_bid,   levels_a,   avail_a_eur = None, 0, 0.0
+            vwap_a_ask_r, _la2,       _aa2        = None, 0, 0.0
 
-        a_bid_eff = vwap_a_bid if vwap_a_bid else venue_a_q["bid"]
-        b_ask_eff = vwap_b_ask if vwap_b_ask else venue_b_q["ask"]
-        a_ask_eff = venue_a_q["ask"]   # buying on A uses ask
-        b_bid_eff = venue_b_q["bid"]   # selling on B uses bid
+        if book_b and amount_base > 0:
+            vwap_b_ask, levels_b,     avail_b_eur = _vwap_with_meta(book_b, "buy",  amount_base)
+            vwap_b_bid_r, _lb2,       _ab2        = _vwap_with_meta(book_b, "sell", amount_base)
+        else:
+            vwap_b_ask,   levels_b,   avail_b_eur = None, 0, 0.0
+            vwap_b_bid_r, _lb2,       _ab2        = None, 0, 0.0
 
-        price_model = "vwap" if (vwap_a_bid and vwap_b_ask) else "top_of_book"
+        # Top-of-book reference prices (pre-VWAP, for slippage comparison)
+        tob_a_bid = (
+            float(max(book_a["bids"].keys())) if book_a and book_a.get("bids")
+            else venue_a_q["bid"]
+        )
+        tob_b_ask = (
+            float(min(book_b["asks"].keys())) if book_b and book_b.get("asks")
+            else venue_b_q["ask"]
+        )
+
+        # Effective fill prices — all four legs use VWAP when available
+        a_bid_eff  = vwap_a_bid   if vwap_a_bid   else venue_a_q["bid"]
+        b_ask_eff  = vwap_b_ask   if vwap_b_ask   else venue_b_q["ask"]
+        a_ask_eff  = vwap_a_ask_r if vwap_a_ask_r else venue_a_q["ask"]  # buy-A leg
+        b_bid_eff  = vwap_b_bid_r if vwap_b_bid_r else venue_b_q["bid"]  # sell-B leg
+
+        price_model = (
+            "vwap"         if all([vwap_a_bid, vwap_b_ask, vwap_a_ask_r, vwap_b_bid_r])
+            else "partial" if any([vwap_a_bid, vwap_b_ask, vwap_a_ask_r, vwap_b_bid_r])
+            else "top_of_book"
+        )
+
+        # VWAP slippage vs top-of-book (bps) — sell-A / buy-B direction (primary display)
+        #   sell A: VWAP bid < TOB bid → slippage = (TOB - VWAP) / TOB × 1e4
+        #   buy  B: VWAP ask > TOB ask → slippage = (VWAP - TOB) / TOB × 1e4
+        vwap_slip_a_bps = (
+            (tob_a_bid - a_bid_eff) / tob_a_bid * 1e4
+            if tob_a_bid > 0 and vwap_a_bid else 0.0
+        )
+        vwap_slip_b_bps = (
+            (b_ask_eff - tob_b_ask) / tob_b_ask * 1e4
+            if tob_b_ask > 0 and vwap_b_ask else 0.0
+        )
 
         # ── 5. Spread on VWAP-adjusted prices ────────────────────────────────
-        spread_eur = a_bid_eff - b_ask_eff          # Positive → A expensive
-        spread_pct = (spread_eur / b_mid * 100) if b_mid > 0 else 0.0
+        spread_eur  = a_bid_eff - b_ask_eff    # sell-A / buy-B  direction (+A expensive)
+        spread_buy_a = b_bid_eff - a_ask_eff   # buy-A  / sell-B direction (+B expensive)
+
+        # Direction-appropriate executable spread: use the leg prices that would
+        # actually be traded, not abs() of the opposite-direction signal.
+        exec_spread_eur = spread_eur if spread_eur >= 0 else spread_buy_a
+        spread_pct = (exec_spread_eur / b_mid * 100) if b_mid > 0 else 0.0
 
         # ── 6. Signal engine ──────────────────────────────────────────────────
         volume     = venue_a_q.get("baseVolume", 0)
@@ -828,20 +1044,40 @@ class BSDEXStrategy:
                 threshold = metrics.threshold
 
         # ── 7. Gate logic ─────────────────────────────────────────────────────
-        # Fees defined first (be_pct used below)
         fee_a  = self._venue_a_taker
         fee_b  = self._venue_b_taker
         be_pct = self.breakeven_spread_pct   # (fee_a + fee_b) × 100
 
-        z_triggered  = (z_score is not None and threshold is not None and abs(z_score) >= threshold)
-        spread_ok    = abs(spread_pct) > be_pct
-        cooldown_ok  = (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
-        # FX staleness gate: if ECB rate is > MAX_FX_AGE_SEC old, the EUR/USD basis
-        # risk may eclipse the spread signal — block trades but continue monitoring.
-        fx_ok        = fx_age <= MAX_FX_AGE_SEC
+        z_triggered = (z_score is not None and threshold is not None and abs(z_score) >= threshold)
 
-        if z_triggered and spread_ok and cooldown_ok and fx_ok:
+        # spread_ok: exec_spread_pct is already direction-appropriate (not abs of wrong leg)
+        spread_ok   = spread_pct > be_pct
+
+        cooldown_ok = (time.time() - self.last_trade_time.get(market, 0)) >= TRADE_COOLDOWN_SEC
+
+        # FX staleness gate: ECB rate > MAX_FX_AGE_SEC → EUR/USD basis risk too large
+        fx_ok       = fx_age <= MAX_FX_AGE_SEC
+
+        # Depth gate: if _vwap_with_meta returned None the order book cannot fill our
+        # entire size — we refuse to fill at top-of-book as that would be a phantom trade.
+        # Check the legs actually used for the chosen direction.
+        if spread_eur >= 0:
+            # sell A / buy B: need Bitstamp bids + Binance asks
+            depth_ok = not (
+                (book_a and amount_base > 0 and vwap_a_bid   is None) or
+                (book_b and amount_base > 0 and vwap_b_ask   is None)
+            )
+        else:
+            # buy A / sell B: need Bitstamp asks + Binance bids
+            depth_ok = not (
+                (book_a and amount_base > 0 and vwap_a_ask_r is None) or
+                (book_b and amount_base > 0 and vwap_b_bid_r is None)
+            )
+
+        if z_triggered and spread_ok and cooldown_ok and fx_ok and depth_ok:
             signal_state = "SIGNAL"
+        elif z_triggered and not depth_ok:
+            signal_state = "SIGNAL_GATED"   # book depth < order size; no phantom fills
         elif z_triggered and not fx_ok:
             signal_state = "SIGNAL_GATED"   # FX rate too stale
         elif z_triggered and not spread_ok:
@@ -883,45 +1119,90 @@ class BSDEXStrategy:
                         sell_fee_rate=sell_fee,
                     )
                     self.last_trade_time[market] = time.time()
+                    mid_fill = (buy_price + sell_price) / 2.0
+                    exec_spread_pct = (
+                        (sell_price - buy_price) / mid_fill * 100
+                        if mid_fill > 0 else 0.0
+                    )
                     trade_data = {
-                        "pnl": pnl, "fees": fees_paid,
-                        "tier": self._tier_label,
-                        "fee_mode": self._fee_mode,
-                        "fx_rate": fx_rate,
-                        "amount": amount,
-                        "buy_exchange": buy_ex,
-                        "sell_exchange": sell_ex,
-                        "buy_price": buy_price,
-                        "sell_price": sell_price,
-                        "price_model": price_model,
+                        "pnl":             pnl,
+                        "fees":            fees_paid,
+                        "tier":            self._tier_label,
+                        "fee_mode":        self._fee_mode,
+                        "fx_rate":         fx_rate,
+                        "amount":          amount,
+                        "buy_exchange":    buy_ex,
+                        "sell_exchange":   sell_ex,
+                        "buy_price":       buy_price,
+                        "sell_price":      sell_price,
+                        "price_model":     price_model,
+                        # Execution transparency — shown in live blotter
+                        "exec_spread_pct": round(exec_spread_pct, 6),
+                        "be_spread_pct":   round(be_pct, 4),
+                        "depth_a_eur":     round(avail_a_eur, 2),
+                        "depth_b_eur":     round(avail_b_eur, 2),
+                        "levels_a":        levels_a,
+                        "levels_b":        levels_b,
+                        "vwap_slip_a_bps": round(vwap_slip_a_bps, 3),
+                        "vwap_slip_b_bps": round(vwap_slip_b_bps, 3),
+                        "tob_a_bid":       round(tob_a_bid, 4),
+                        "tob_b_ask":       round(tob_b_ask, 4),
                     }
+                    # Persist execution metadata on the simulator's trade record
+                    if self.simulator.trades:
+                        self.simulator.trades[-1].update({
+                            k: trade_data[k]
+                            for k in (
+                                "exec_spread_pct", "be_spread_pct",
+                                "depth_a_eur", "depth_b_eur",
+                                "levels_a", "levels_b",
+                                "vwap_slip_a_bps", "vwap_slip_b_bps",
+                                "price_model", "tob_a_bid", "tob_b_ask",
+                                "tier", "fx_rate",
+                            )
+                        })
                     logger.info(
-                        f"[BSDEX] Trade {market}: {amount:.6f} BUY@{buy_price:.2f} ({buy_ex}), "
-                        f"SELL@{sell_price:.2f} ({sell_ex}), PnL=€{pnl:.4f} | "
-                        f"tier={self._tier_label} feeA={fee_a:.4%} feeB={fee_b:.4%} "
-                        f"model={price_model} ws={'✓' if self._binance_ws.connected else '✗'}"
+                        f"[BSDEX] Trade {market}: {amount:.6f} "
+                        f"BUY@{buy_price:.2f} ({buy_ex}) SELL@{sell_price:.2f} ({sell_ex}) "
+                        f"PnL=€{pnl:.4f} execSpread={exec_spread_pct:.4f}% "
+                        f"B/E={be_pct:.4f}% depth_a=€{avail_a_eur:.0f} depth_b=€{avail_b_eur:.0f} "
+                        f"slip_a={vwap_slip_a_bps:.2f}bps slip_b={vwap_slip_b_bps:.2f}bps "
+                        f"model={price_model} lv_a={levels_a} lv_b={levels_b} "
+                        f"tier={self._tier_label} feeA={fee_a:.4%} feeB={fee_b:.4%}"
                     )
 
         # ── 9. Rolling spread buffer ──────────────────────────────────────────
         tick = {
-            "ts":           now_ts.isoformat(),
-            "spread_eur":   round(spread_eur, 4),
-            "spread_pct":   round(spread_pct, 6),
-            "z_score":      round(z_score, 4)   if z_score   is not None else None,
-            "threshold":    round(threshold, 4) if threshold is not None else None,
-            "signal_state": signal_state,
-            "a_bid":        round(a_bid_eff, 4),
-            "a_ask":        round(a_ask_eff, 4),
-            "b_bid":        round(b_bid_eff, 4),
-            "b_ask":        round(b_ask_eff, 4),
-            "fx_rate":      round(fx_rate, 6),
-            "fx_age_sec":   round(fx_age, 1),
-            "price_model":  price_model,
-            "binance_ws":   self._binance_ws.connected,
-            "trade":        trade_data,
+            "ts":               now_ts.isoformat(),
+            "spread_eur":       round(spread_eur, 4),
+            "spread_pct":       round(spread_pct, 6),
+            "z_score":          round(z_score, 4)   if z_score   is not None else None,
+            "threshold":        round(threshold, 4) if threshold is not None else None,
+            "signal_state":     signal_state,
+            "a_bid":            round(a_bid_eff, 4),
+            "a_ask":            round(a_ask_eff, 4),
+            "b_bid":            round(b_bid_eff, 4),
+            "b_ask":            round(b_ask_eff, 4),
+            "tob_a_bid":        round(tob_a_bid, 4),
+            "tob_b_ask":        round(tob_b_ask, 4),
+            "fx_rate":          round(fx_rate, 6),
+            "fx_age_sec":       round(fx_age, 1),
+            "price_model":      price_model,
+            "depth_a_eur":      round(avail_a_eur, 2),
+            "depth_b_eur":      round(avail_b_eur, 2),
+            "vwap_slip_a_bps":  round(vwap_slip_a_bps, 3),
+            "vwap_slip_b_bps":  round(vwap_slip_b_bps, 3),
+            "bs_ws_depth":      self._bitstamp_depth_ws.connected,
+            "binance_ws":       self._binance_ws.connected,
+            "trade":            trade_data,
         }
         self._spread_buf[market].append(tick)
 
+        # depth warning: visible book < 1.5× capital on either venue
+        depth_warn = (
+            (avail_a_eur > 0 and avail_a_eur < self._capital_eur * 1.5) or
+            (avail_b_eur > 0 and avail_b_eur < self._capital_eur * 1.5)
+        )
         self.latest[market] = {
             **tick,
             "venue_a_source":       venue_a_q.get("source", self.data_source),
@@ -930,6 +1211,8 @@ class BSDEXStrategy:
             "venue_a_taker_pct":    round(fee_a * 100, 4),
             "venue_b_taker_pct":    round(fee_b * 100, 4),
             "tier_label":           self._tier_label,
+            "capital_eur":          self._capital_eur,
+            "depth_warn":           depth_warn,
         }
 
     # ------------------------------------------------------------------
@@ -940,8 +1223,10 @@ class BSDEXStrategy:
         """Start the BSDEX strategy loop (and WS providers)."""
         self._running = True
 
-        # Launch Binance depth WebSocket (eliminates REST calls for world-leg prices)
+        # Launch Binance depth WebSocket (100ms depth20 snapshots)
         asyncio.create_task(self._binance_ws.run())
+        # Launch Bitstamp depth WebSocket (replaces 5s REST polling)
+        asyncio.create_task(self._bitstamp_depth_ws.run())
 
         # Launch BSDEX WS listener if authenticated
         if self._use_real_bsdex and self._bsdex_ws:
@@ -961,6 +1246,7 @@ class BSDEXStrategy:
     def stop(self):
         self._running = False
         self._binance_ws.stop()
+        self._bitstamp_depth_ws.stop()
         if self._bsdex_ws:
             self._bsdex_ws.stop()
 
@@ -1006,17 +1292,29 @@ class BSDEXStrategy:
             ts     = t.get("timestamp")
             ts_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             result.append({
-                "timestamp":      ts_str,
-                "market":         t.get("symbol"),
-                "buy_exchange":   t.get("buy_exchange"),
-                "sell_exchange":  t.get("sell_exchange"),
-                "buy_price_eur":  round(t.get("buy_price", 0), 4),
-                "sell_price_eur": round(t.get("sell_price", 0), 4),
-                "amount":         round(t.get("amount", 0), 8),
-                "pnl_eur":        round(t.get("pnl", 0), 4),
-                "fees_eur":       round(t.get("fees", 0), 4),
-                "tier":           t.get("tier", self._tier_label),
-                "fx_rate":        t.get("fx_rate", self.fx_cache.rate),
+                "timestamp":        ts_str,
+                "market":           t.get("symbol"),
+                "buy_exchange":     t.get("buy_exchange"),
+                "sell_exchange":    t.get("sell_exchange"),
+                "buy_price_eur":    round(t.get("buy_price", 0), 4),
+                "sell_price_eur":   round(t.get("sell_price", 0), 4),
+                "amount":           round(t.get("amount", 0), 8),
+                "pnl_eur":          round(t.get("pnl", 0), 4),
+                "fees_eur":         round(t.get("fees", 0), 4),
+                "tier":             t.get("tier", self._tier_label),
+                "fx_rate":          t.get("fx_rate", self.fx_cache.rate),
+                # Execution transparency
+                "price_model":      t.get("price_model", "unknown"),
+                "exec_spread_pct":  round(t.get("exec_spread_pct", 0), 4),
+                "be_spread_pct":    round(t.get("be_spread_pct", 0), 4),
+                "depth_a_eur":      t.get("depth_a_eur"),
+                "depth_b_eur":      t.get("depth_b_eur"),
+                "levels_a":         t.get("levels_a"),
+                "levels_b":         t.get("levels_b"),
+                "vwap_slip_a_bps":  t.get("vwap_slip_a_bps"),
+                "vwap_slip_b_bps":  t.get("vwap_slip_b_bps"),
+                "tob_a_bid":        t.get("tob_a_bid"),
+                "tob_b_ask":        t.get("tob_b_ask"),
             })
         return result
 
