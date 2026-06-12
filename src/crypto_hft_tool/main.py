@@ -696,8 +696,8 @@ def _run_backtest_sync(req: BacktestRequest) -> Dict[str, Any]:
             "net_pnl":      round(float(t.get("pnl",  0)), 8),
         })
 
-    gross = bt.metrics["total_pnl"]
-    fees  = bt.metrics["total_fees"]
+    net_pnl = bt.metrics["total_pnl"]   # already net of fees (TradeSimulator deducts them)
+    fees    = bt.metrics["total_fees"]
     return {
         "fee_tier":      req.fee_tier,
         "trade_amount":  req.trade_amount,
@@ -705,9 +705,9 @@ def _run_backtest_sync(req: BacktestRequest) -> Dict[str, Any]:
         "data_sources":  data_sources,
         "summary": {
             "total_trades":  len(bt.simulator.trades),
-            "gross_pnl":     round(gross, 8),
-            "total_fees":    round(fees,  8),
-            "net_pnl":       round(gross - fees, 8),
+            "gross_pnl":     round(net_pnl + fees, 8),  # add fees back to recover gross
+            "total_fees":    round(fees, 8),
+            "net_pnl":       round(net_pnl, 8),         # correct: already net
             "win_rate":      round(bt.metrics.get("win_rate", 0.0), 4),
             "sharpe_ratio":  round(bt.metrics.get("sharpe_ratio", 0.0), 4),
             "max_drawdown":  round(bt.metrics.get("max_drawdown", 0.0), 8),
