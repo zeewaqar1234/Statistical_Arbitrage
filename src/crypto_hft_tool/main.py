@@ -869,6 +869,10 @@ class BSDEXBacktestRequest(BaseModel):
     venue_b_taker:  float = 0.0006       # LMAX/Binance taker (decimal)
     capital_eur:    float = 1000.0       # EUR per leg per trade
     tier_label:     str   = "custom"
+    data_source:    str   = "candles"
+    quote_path:     Optional[str] = None
+    latency_ms:     int   = 300
+    spread_model:   str   = "conservative"
 
 
 @app.post("/api/v1/bsdex/historical_backtest")
@@ -900,6 +904,10 @@ async def bsdex_historical_backtest(req: BSDEXBacktestRequest):
             venue_b_taker=req.venue_b_taker,
             capital_eur=req.capital_eur,
             tier_label=req.tier_label,
+            data_source=req.data_source,
+            quote_path=req.quote_path,
+            latency_ms=req.latency_ms,
+            spread_model=req.spread_model,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
