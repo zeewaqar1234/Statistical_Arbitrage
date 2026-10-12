@@ -174,6 +174,10 @@ function AppContent() {
 
   // Backtesting state
   // BSDEX Historical Backtest state
+  const [hbtDataSource, setHbtDataSource] = useState('candles');
+  const [hbtQuotePath, setHbtQuotePath] = useState('data/quotes');
+  const [hbtLatency, setHbtLatency] = useState(300);
+  const [hbtSpreadModel, setHbtSpreadModel] = useState('conservative');
   const [hbtSymbol,      setHbtSymbol]      = useState('btc-eur');
   const [hbtStartDt,     setHbtStartDt]     = useState('');        // datetime-local string
   const [hbtEndDt,       setHbtEndDt]       = useState('');
@@ -272,7 +276,7 @@ function AppContent() {
   );
 
   // Break-even derived from local fee state (always up to date)
-  const bsdexBreakevenPct = (bsdexFeeA + bsdexFeeB) * 100;
+  const bsdexBreakevenPct = (bsdexFeeA + bsdexFeeB) * 100 + (bsdexStatus?.fx_cost_bps ?? 1) / 100;
 
 
   const bsdexZScore          = bsdexMarketData?.z_score ?? null;
@@ -281,7 +285,7 @@ function AppContent() {
   const bsdexSpreadPct       = bsdexMarketData?.spread_pct ?? null;
   const bsdexSignalState     = bsdexMarketData?.signal_state ?? 'HOLD';
   const bsdexSignalTriggered = bsdexSignalState === 'SIGNAL';
-  const bsdexSignalGated     = bsdexSignalState === 'SIGNAL_GATED';
+  const bsdexSignalGated     = ['SIGNAL_GATED', 'FX_STALE', 'BOOK_STALE', 'FILL_FAILED'].includes(bsdexSignalState);
   const bsdexSignalCooldown  = bsdexSignalState === 'SIGNAL_COOLDOWN';
   const bsdexBase            = bsdexMarket.split('-')[0].toUpperCase();
 
@@ -328,8 +332,12 @@ function AppContent() {
     try {
       const result = await api.runHistoricalBacktest({
         symbol:        hbtSymbol,
-        start_dt:      new Date(hbtStartDt).toISOString(),
-        end_dt:        new Date(hbtEndDt).toISOString(),
+        data_source: hbtDataSource,
+        quote_path: hbtQuotePath,
+        latency_ms: hbtLatency,
+        spread_model: hbtSpreadModel,
+        start_dt:      new Date(`${hbtStartDt}Z`).toISOString(),
+        end_dt:        new Date(`${hbtEndDt}Z`).toISOString(),
         venue_a_taker: hbtFeeA,
         venue_b_taker: hbtFeeB,
         capital_eur:   hbtCapital,
@@ -345,7 +353,7 @@ function AppContent() {
       setHbtStatus('error');
     }
   }, [hbtSymbol, hbtStartDt, hbtEndDt, hbtFeeA, hbtFeeB, hbtCapital,
-      hbtFeeMode, hbtTierIdx, bsdexVolumeTiers]);
+      hbtFeeMode, hbtTierIdx, bsdexVolumeTiers, hbtDataSource, hbtQuotePath, hbtLatency, hbtSpreadModel]);
 
   // Excel export via SheetJS — handles dual-scenario result shape
   const handleExportExcel = useCallback(() => {
@@ -355,14 +363,18 @@ function AppContent() {
 
       const writeScenario = (scenario, label) => {
         if (!scenario) return;
-        const sumRows = Object.entries(scenario.summary).map(([k, v]) => ({ Field: k, Value: v }));
+        const sumRows = Object.entries(scenario.summary).map(([k, v]) => ({ Field: k, Value: typeof v === 'object' ? JSON.stringify(v) : v }));
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sumRows), `${label} Summary`);
 
         if (scenario.trades?.length > 0) {
           const tradeRows = scenario.trades.map((t) => ({
             Timestamp:      t.ts_str?.slice(0, 19).replace('T', ' '),
             Direction:      t.direction,
-            'Spread %':     t.spread_pct,
+            'Signal %': t.signal_spread_pct,
+            'Realized %': t.realized_spread_pct,
+            'FX cost EUR': t.fx_cost_eur,
+            'Signal timestamp': t.signal_ts,
+            'Fill timestamp': t.fill_ts,
             'Z-Score':      t.z_score,
             'Signal A (€)': t.price_a_eur,
             'Signal B (€)': t.price_b_eur,
@@ -411,9 +423,9 @@ function AppContent() {
     : bsdexSignalCooldown ? 'tag-orange'
     : 'tag-muted';
   const signalTagText = bsdexSignalTriggered ? 'SIGNAL'
-    : bsdexSignalGated    ? 'GATED'
+    : bsdexSignalGated    ? bsdexSignalState
     : bsdexSignalCooldown ? 'COOLDOWN'
-    : 'HOLD';
+    : bsdexSignalState;
 
   return (
     <ThemeProvider theme={theme}>
@@ -452,7 +464,7 @@ function AppContent() {
           const priceModel    = bsdexMarketData?.price_model ?? null;
           const isVwap        = priceModel && priceModel.toLowerCase().includes('vwap');
           const fxAgeSec      = bsdexStatus?.fx_age_sec ?? null;
-          const fxAgeStale    = fxAgeSec != null && fxAgeSec > 120;
+          const fxAgeStale    = fxAgeSec == null || fxAgeSec > 5;
           const cumPnl        = bsdexStatus?.total_pnl_eur ?? 0;
           const cumPnlPos     = cumPnl >= 0;
           const totalTrades   = bsdexStatus?.total_trades ?? 0;
@@ -546,8 +558,8 @@ function AppContent() {
                     )}
                     {/* Bitstamp data source badge */}
                     <span className={`live-badge ${bsWsDepth ? 'live-badge-green' : 'live-badge-yellow'}`}
-                          title={bsWsDepth ? 'Bitstamp order book via WebSocket (sub-second)' : 'Bitstamp order book via REST (5 s cache — WS connecting…)'}>
-                      BS {bsWsDepth ? 'WS ✓' : 'REST'}
+                          title={bsWsDepth ? 'Bitstamp order book via WebSocket (sub-second)' : 'Waiting for fresh Bitstamp WS depth'}>
+                      BS {bsWsDepth ? 'WS ✓' : 'WS waiting'}
                     </span>
                     {/* Depth warning */}
                     {depthWarn && (
@@ -613,63 +625,28 @@ function AppContent() {
                       <table className="dense-table">
                         <thead>
                           <tr>
-                            <th>Time</th>
-                            <th>Route</th>
-                            <th className="right" title="Actual executed spread (sell − buy) / mid × 100">Exec%</th>
-                            <th className="right" title="Break-even spread threshold at time of trade">B/E%</th>
-                            <th className="right" title="EUR notional available on Bitstamp bid-side">Dep.A</th>
-                            <th className="right" title="EUR notional available on Binance ask-side">Dep.B</th>
-                            <th className="right" title="Total VWAP slippage vs top-of-book (A + B bps)">Slip</th>
-                            <th className="right">Amount</th>
-                            <th className="right">Fees</th>
-                            <th className="right">Net (€)</th>
-                            <th title="Price model: vwap = walked order book; tob = top-of-book only">Mdl</th>
+                            {['Time', 'Market', 'Buy venue', 'Buy price', 'Sell venue', 'Sell price', 'Quantity', 'Notional EUR', 'Signal %', 'Realized %', 'Gross', 'Fees', 'Net', 'Model'].map(label => <th key={label}>{label}</th>)}
                           </tr>
                         </thead>
                         <tbody>
-                          {bsdexTrades.map((t, i) => {
-                            const model      = t.price_model ?? (t.vwap_used ? 'vwap' : 'tob');
-                            const isVwapRow  = model.includes('vwap');
-                            const totalSlip  = ((t.vwap_slip_a_bps ?? 0) + (t.vwap_slip_b_bps ?? 0));
-                            const execVsBe   = (t.exec_spread_pct ?? 0) > (t.be_spread_pct ?? 0);
-                            const depAk      = t.depth_a_eur != null ? `€${(t.depth_a_eur/1000).toFixed(1)}k` : '—';
-                            const depBk      = t.depth_b_eur != null ? `€${(t.depth_b_eur/1000).toFixed(1)}k` : '—';
-                            return (
-                              <tr key={i}>
-                                <td style={{color:'var(--text-muted)'}}>{t.timestamp?.slice(11,19) ?? '—'}</td>
-                                <td className="text" style={{color:'var(--text-secondary)',whiteSpace:'nowrap'}}>
-                                  {t.buy_exchange} → {t.sell_exchange}
-                                </td>
-                                <td className={`right mono ${execVsBe ? 'pnl-pos' : 'pnl-neg'}`}
-                                    title={`Executed spread: ${t.exec_spread_pct?.toFixed(4)}%  B/E: ${t.be_spread_pct?.toFixed(4)}%`}>
-                                  {t.exec_spread_pct?.toFixed(3) ?? '—'}
-                                </td>
-                                <td className="right mono" style={{color:'var(--text-muted)'}}>
-                                  {t.be_spread_pct?.toFixed(3) ?? '—'}
-                                </td>
-                                <td className={`right mono ${t.depth_a_eur != null && capitalEur > 0 && t.depth_a_eur < capitalEur * 1.5 ? 'pnl-neg' : 'pnl-pos'}`}
-                                    title={`${t.levels_a ?? '?'} book level${t.levels_a !== 1 ? 's' : ''} consumed on Bitstamp`}>
-                                  {depAk}
-                                </td>
-                                <td className="right mono pnl-pos"
-                                    title={`${t.levels_b ?? '?'} book level${t.levels_b !== 1 ? 's' : ''} consumed on Binance`}>
-                                  {depBk}
-                                </td>
-                                <td className={`right mono ${totalSlip > 10 ? 'pnl-neg' : ''}`}
-                                    title={`Bitstamp: ${t.vwap_slip_a_bps?.toFixed(2) ?? '?'} bps  Binance: ${t.vwap_slip_b_bps?.toFixed(2) ?? '?'} bps`}>
-                                  {totalSlip > 0 ? `${totalSlip.toFixed(1)}` : '—'}
-                                </td>
-                                <td className="right mono">{t.amount?.toFixed(5) ?? '—'}</td>
-                                <td className="right mono pnl-neg">{t.fees_eur?.toFixed(4) ?? '—'}</td>
-                                <td className={`right ${(t.pnl_eur ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>
-                                  <strong>{t.pnl_eur?.toFixed(4) ?? '—'}</strong>
-                                </td>
-                                <td className="mono" style={{color: isVwapRow ? 'var(--accent-green)' : 'var(--accent-yellow)', fontSize:'var(--font-size-xs)'}}>
-                                  {isVwapRow ? 'vwap' : 'tob'}
-                                </td>
-                              </tr>
-                            );
-                          })}
+                          {bsdexTrades.map((t, i) => (
+                            <tr key={i}>
+                              <td>{t.timestamp?.slice(11,19) ?? '—'}</td>
+                              <td>{t.market?.toUpperCase() ?? '—'}</td>
+                              <td>{t.buy_exchange}</td>
+                              <td className="right mono">{t.buy_price_eur?.toFixed(2)}</td>
+                              <td>{t.sell_exchange}</td>
+                              <td className="right mono">{t.sell_price_eur?.toFixed(2)}</td>
+                              <td className="right mono">{t.amount?.toFixed(6)} {t.market?.split('-')[0]?.toUpperCase()}</td>
+                              <td className="right mono">{t.notional_eur?.toFixed(2) ?? '—'}</td>
+                              <td className="right mono">{t.signal_spread_pct?.toFixed(4) ?? '—'}</td>
+                              <td className="right mono">{t.realized_spread_pct?.toFixed(4) ?? '—'}</td>
+                              <td className="right mono">{t.gross_eur?.toFixed(4) ?? '—'}</td>
+                              <td className="right mono pnl-neg">{t.fees_eur?.toFixed(4) ?? '—'}</td>
+                              <td className={`right mono ${(t.pnl_eur ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>{t.pnl_eur?.toFixed(4)}</td>
+                              <td title={`Observed fill latency: ${t.fill_latency_ms?.toFixed(0)} ms`}>{t.price_model}</td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     ) : (
@@ -691,6 +668,10 @@ function AppContent() {
                       ['Win Rate',  `${winRate.toFixed(1)}%`,     winRate >= 50 ? 'pnl-pos' : ''],
                       ['Cum PnL',   `${cumPnlPos?'+':''}€${cumPnl.toFixed(4)}`, cumPnlPos ? 'pnl-pos' : 'pnl-neg'],
                       ['Fees Paid', `€${totalFees.toFixed(4)}`,  'pnl-neg'],
+                      ['FX cost', `${bsdexStatus?.fx_cost_bps ?? 1} bps / USDT leg`, ''],
+                      ['Fill latency', `${bsdexStatus?.fill_latency_ms ?? 300} ms minimum`, ''],
+                      ['Failed fills', bsdexStatus?.execution_failures?.length ?? 0, ''],
+                      ['ECB fixing (reference)', bsdexStatus?.ecb_fixing?.toFixed(5) ?? '—', ''],
                       ['FX Rate',   bsdexStatus?.fx_rate_usd_eur?.toFixed(5) ?? '—', ''],
                       ['FX Age',    fxAgeSec != null ? `${Math.round(fxAgeSec)}s` : '—', fxAgeStale ? 'pnl-neg' : ''],
                       ['Signal',    signalTagText, signalTagClass === 'tag-green' ? 'pnl-pos' : ''],
@@ -820,11 +801,39 @@ function AppContent() {
             <div className="bt-config-panel">
               <div className="section-header">BSDEX vs World — Historical Backtest</div>
               <p style={{fontSize:'var(--font-size-xs)',color:'var(--text-secondary)',margin:'0 0 10px',lineHeight:1.6}}>
-                Fetches <strong>real 1-minute OHLCV</strong> from Bitstamp (EUR) and Binance (USDT→EUR via Frankfurter/ECB FX).
+                Uses <strong>recorded executable quotes</strong> or 1-minute candles from Bitstamp and Binance (EURUSDT FX). Candles are an approximation and may contain stale closes.
                 Runs the same spread / z-score logic as the live strategy (60-min rolling window, threshold 1.5σ, 30-min trade cooldown).
-                All prices and PnL in <strong>EUR</strong>. Max range: 7 days.
+                All prices and PnL in <strong>EUR</strong>. Candle range: up to 7 days; recorded quotes can span longer.
               </p>
+              {hbtDataSource === 'quotes' && <p style={{fontSize:'var(--font-size-xs)', color:'var(--text-secondary)'}}>
+                Quotes are recorded automatically while the backend is running and connected. Allow at least 60 minutes, then choose dates within the recorded period. Earlier order books are unavailable; use Candles for past dates.
+                {bsdexStatus?.quote_recording && <span> Recorder: {bsdexStatus.quote_recording.state.replaceAll('_', ' ')}.
+                  {bsdexStatus.quote_recording.last_snapshot && <> Latest snapshot: {new Date(bsdexStatus.quote_recording.last_snapshot).toISOString()}.</>}
+                </span>}
+              </p>}
               <div className="bt-config-grid">
+                <div className="bt-field">
+                  <label>Data source</label>
+                  <select className="bb-select" value={hbtDataSource} onChange={e => setHbtDataSource(e.target.value)}>
+                    <option value="candles">Candles</option><option value="quotes">Recorded quotes</option>
+                  </select>
+                </div>
+                {hbtDataSource === 'candles' && <div className="bt-field">
+                  <label>Spread model</label>
+                  <select className="bb-select" value={hbtSpreadModel} onChange={e => setHbtSpreadModel(e.target.value)}>
+                    <option value="conservative">Conservative (A: 5 bps)</option>
+                    <option value="calibrated">Calibrated from earlier recorded quotes</option>
+                  </select>
+                </div>}
+                {(hbtDataSource === 'quotes' || hbtSpreadModel === 'calibrated') && <div className="bt-field">
+                  <label>Quote file or directory (on server)</label>
+                  <input className="bb-input" value={hbtQuotePath} onChange={e => setHbtQuotePath(e.target.value)} />
+                </div>}
+                {hbtDataSource === 'quotes' && <div className="bt-field">
+                  <label>Fill latency (ms)</label>
+                  <input className="bb-input" type="number" min="0" value={hbtLatency} onChange={e => setHbtLatency(Number(e.target.value))} />
+                </div>}
+
                 <div className="bt-field">
                   <label>Market</label>
                   <select className="bb-select" value={hbtSymbol} onChange={(e) => setHbtSymbol(e.target.value)}>
@@ -877,7 +886,7 @@ function AppContent() {
               </div>
               <div className="be-box" style={{width:'fit-content',marginBottom:8}}>
                 <span className="be-label">B/E Spread</span>
-                <span className="be-value" style={{marginLeft:12}}>{((hbtFeeA+hbtFeeB)*100).toFixed(3)}%</span>
+                <span className="be-value" style={{marginLeft:12}}>{((hbtFeeA+hbtFeeB)*100 + (hbtSymbol === 'btc-eur-kraken' ? 0 : 0.01)).toFixed(3)}%</span>
               </div>
               <div className="bt-actions">
                 <button type="button" className="bb-btn" onClick={handleRunHistoricalBacktest} disabled={hbtStatus === 'running'}>
@@ -893,7 +902,7 @@ function AppContent() {
 
             {hbtStatus === 'running' && (
               <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)',padding:24,textAlign:'center'}}>
-                <div style={{fontSize:'var(--font-size-sm)',color:'var(--text-secondary)'}}>Fetching real 1-minute OHLCV from Bitstamp &amp; Binance…</div>
+                <div style={{fontSize:'var(--font-size-sm)',color:'var(--text-secondary)'}}>Running backtest on the selected data source…</div>
                 <div style={{marginTop:8,fontSize:'var(--font-size-xs)',color:'var(--text-muted)'}}>Depending on date range this takes 5–30 seconds (live API calls).</div>
               </div>
             )}
@@ -909,8 +918,9 @@ function AppContent() {
               const us = ub?.summary;
               const netPos = rs.total_pnl_eur >= 0;
               const beStr  = `${rs.breakeven_spread_pct?.toFixed(3)}%`;
-              const fxTag  = meta.fx_granularity === '1m' ? '1m intraday' : meta.fx_granularity === 'none-eur-native' ? 'native EUR' : 'daily fallback ⚠';
+              const fxTag  = meta.data_source === 'recorded_quotes' ? 'EUR/USDT recorded WS' : meta.fx_granularity === '1m' ? '1m intraday' : meta.fx_granularity === 'none-eur-native' ? 'native EUR' : 'daily fallback ⚠';
               const ec     = rs.exec_costs ?? {};
+              const fillLabel = meta.data_source === 'recorded_quotes' ? `First snapshot ≥ ${meta.fill_latency_ms} ms (1s recording)` : 'Bar i+1 (1-min lag)';
 
               const kpiCard = (label, val, cls) => (
                 <div className="bt-kpi-cell" key={label}>
@@ -928,7 +938,10 @@ function AppContent() {
                     <span><strong style={{color:'var(--text-primary)'}}>FX:</strong> {fxTag}</span>
                     <span><strong style={{color:'var(--text-primary)'}}>Half-spread:</strong> A={ec.half_spread_bps_venue_a} bps · B={ec.half_spread_bps_venue_b} bps</span>
                     <span><strong style={{color:'var(--text-primary)'}}>Slippage:</strong> {ec.slippage_bps} bps</span>
-                    <span style={{marginLeft:'auto',color:'var(--text-muted)'}}>Fills: bar i+1 (1-min lag) · No look-ahead</span>
+                    <span>Model: {ec.spread_model}</span>
+                    <span>FX cost: {ec.fx_cost_bps} bps on USDT leg</span>
+                    <span>Failed fills: {rs.failed_fills ?? 0}</span>
+                    <span style={{marginLeft:'auto',color:'var(--text-muted)'}}>Fills: {fillLabel}</span>
                   </div>
 
                   {/* ── REALISTIC headline KPI row ───────────────────── */}
@@ -938,6 +951,8 @@ function AppContent() {
                       ['Gross PnL',    `€${rs.gross_pnl_eur?.toFixed(4)}`,   rs.gross_pnl_eur >= 0 ? 'pnl-pos' : 'pnl-neg'],
                       ['Total Fees',   `−€${rs.total_fees_eur?.toFixed(4)}`,  'pnl-neg'],
                       ['Net PnL',      `€${rs.total_pnl_eur?.toFixed(4)}`,    netPos ? 'pnl-pos' : 'pnl-neg'],
+                      ['Carry', `€${rs.carry_eur?.toFixed(4)}`, 'pnl-neg'],
+                      ['Net after carry', `€${rs.net_after_carry_eur?.toFixed(4)}`, rs.net_after_carry_eur >= 0 ? 'pnl-pos' : 'pnl-neg'],
                       ['Total Trades', rs.total_trades,                        ''],
                       ['Wins / Losses',`${rs.win_trades} / ${rs.loss_trades}`, ''],
                       ['Win Rate',     `${rs.win_rate_pct?.toFixed(1)}%`,      rs.win_rate_pct < 100 ? '' : 'pnl-neg'],
@@ -1039,9 +1054,12 @@ function AppContent() {
                     <table className="param-table">
                       <thead><tr><th>Parameter</th><th>Value</th><th>Note</th></tr></thead>
                       <tbody>
-                        <tr><td>Scenario shown</td><td>Realistic (headline) + Upper bound (secondary)</td><td>Never present upper bound alone</td></tr>
+                        <tr><td>Scenario shown</td><td>{us ? 'Realistic + upper bound' : 'Recorded executable depth'}</td><td>Never present upper bound alone</td></tr>
                         <tr><td>Signal threshold</td><td>{rs.zscore_threshold}σ rolling z-score</td><td>60-min window</td></tr>
-                        <tr><td>Execution</td><td>Bar i+1 fills (1-min lag)</td><td>P2: no look-ahead bias</td></tr>
+                        <tr><td>Execution</td><td>{fillLabel}</td><td>Gate on signal; book fill regardless of sign</td></tr>
+                        <tr><td>Carry</td><td>4 pools × capital × 2.50% × hours / 8760</td><td>{ec.carry_dfr_source}</td></tr>
+                        <tr><td>FX cost</td><td>{ec.fx_cost_bps} bps</td><td>Charged once on the USDT leg</td></tr>
+                        <tr><td>Spread model</td><td>{ec.spread_model}</td><td>{ec.calibration_source ?? 'Recorded book or conservative assumption'}</td></tr>
                         <tr><td>Exec costs (realistic)</td><td>HS A={ec.half_spread_bps_venue_a} bps · HS B={ec.half_spread_bps_venue_b} bps · Slip {ec.slippage_bps} bps</td><td>Mid→executable price adjustment</td></tr>
                         <tr><td>Break-even gate</td><td>{rs.breakeven_spread_pct?.toFixed(3)}%</td><td>Applied to adjusted prices</td></tr>
                         <tr><td>Cooldown</td><td>{rs.trade_cooldown_min} min</td><td>Toxic flow guard</td></tr>
@@ -1065,7 +1083,7 @@ function AppContent() {
                         <table className="dense-table">
                           <thead>
                             <tr>
-                              <th>Time (UTC)</th><th>Direction</th><th>Spread %</th><th>Z-Score</th>
+                              <th>Time (UTC)</th><th>Direction</th><th>Signal %</th><th>Realized %</th><th>Z-Score</th>
                               <th className="right">Fill A (€)</th><th className="right">Fill B (€)</th>
                               <th className="right">Slip bps</th><th className="right">Amount</th>
                               <th className="right">Gross (€)</th><th className="right">Fees (€)</th>
@@ -1077,7 +1095,7 @@ function AppContent() {
                               <tr key={i}>
                                 <td style={{color:'var(--text-muted)'}}>{t.ts_str?.slice(0,16).replace('T',' ')}</td>
                                 <td className="text">{t.direction}</td>
-                                <td className={t.spread_pct > 0 ? 'pnl-pos' : 'pnl-neg'}>{t.spread_pct?.toFixed(4)}%</td>
+                                <td>{t.signal_spread_pct?.toFixed(4)}%</td><td>{t.realized_spread_pct?.toFixed(4)}%</td>
                                 <td>{t.z_score?.toFixed(3)}</td>
                                 <td className="right">€{t.fill_a_eur?.toFixed(2)}</td>
                                 <td className="right">€{t.fill_b_eur?.toFixed(2)}</td>
@@ -1096,7 +1114,7 @@ function AppContent() {
                     <div style={{background:'var(--bg-panel)',border:'1px solid var(--border)',padding:24,textAlign:'center',color:'var(--text-secondary)',fontSize:'var(--font-size-sm)'}}>
                       <strong>No trades executed</strong> in this period under the selected fee tier.
                       The executable spread (after half-spread + slippage) did not exceed the break-even threshold of <strong>{beStr}</strong>.
-                      Try a lower fee tier, wider date range, or check the upper-bound row for mid-price signal count.
+                      Review the recorded data coverage and selected cost assumptions.
                     </div>
                   )}
                 </div>
@@ -1118,7 +1136,7 @@ function AppContent() {
         <span className="status-sep">|</span>
         <span>Venue B: Binance USDT→EUR (LMAX fee model)</span>
         <span className="status-sep">|</span>
-        <span>FX: ECB/Frankfurter (60s)</span>
+        <span>FX: Binance EUR/USDT live (WS)</span>
         <span className="status-sep">|</span>
         <span>All trades simulated</span>
         <span className="status-sep">|</span>

@@ -13,6 +13,9 @@ os.makedirs(os.path.join(data_folder, "processed"), exist_ok=True)
 # Load .env into os.environ
 load_dotenv()
 
+# Relative quote paths are anchored to PROJECT_ROOT, not the server working directory.
+QUOTE_DATA_DIR = os.getenv("QUOTE_DATA_DIR", os.path.join(data_folder, "quotes"))
+
 # Trading pairs
 SYMBOLS = [
     'BTC/USDT',
@@ -208,9 +211,22 @@ BSDEX_BITSTAMP_MAP = {        # BSDEX market -> Bitstamp ticker (EUR fallback)
     "eth-eur": "etheur",
 }
 
-# EUR/USD FX rate source (Frankfurter wraps the ECB daily reference rate).
+# EUR/USD ECB fixing (display reference only — live pricing uses Binance EUR/USDT WS).
 FX_RATE_SOURCE   = "https://api.frankfurter.app/latest?from=USD&to=EUR"
-FX_REFRESH_SEC   = 60          # Re-fetch FX rate every 60 s
+FX_REFRESH_SEC   = 60          # Re-fetch ECB reference for status bar display
+
+# Live engine: max age of Binance EURUSDT depth snapshot before blocking trades.
+MAX_FX_AGE_SEC   = 5
+
+# Paper fill latency (ms) — signal at t, fill at first tick >= t + latency.
+LIVE_FILL_LATENCY_MS = 300
+
+# Per-trade FX desk cost on the USDT leg (basis points).
+FX_COST_BPS = 1.0
+
+# Carry model for backtest summary (ECB deposit facility 2.50% from 16 Sep 2026).
+POOLS = 4
+ECB_DFR = 0.025
 
 # BSDEX API credentials (optional — enables real BSDEX data instead of Bitstamp proxy).
 BSDEX_CREDENTIALS = {
@@ -293,7 +309,7 @@ BSDEX_VOLUME_TIERS: list = [
 # not assume the most optimistic fee schedule (P7).
 BSDEX_DEFAULT_TIER_IDX: int = 2   # "> $20M" as the default starting point
 
-# Legacy fee presets kept for bsdex_backtest.py backward compatibility.
+# Legacy fee presets retained for the live fee-preset API.
 BSDEX_STRATEGY_FEES = {
     "bsdex_retail":        {"maker": 0.0020, "taker": 0.0040},
     "bsdex_institutional": {"maker": 0.0010, "taker": 0.0012},
@@ -314,11 +330,14 @@ BSDEX_ACTIVE_FEE_PRESET = "retail_demo"  # legacy — UI now uses volume tiers
 # "upper_bound" scenario zeros these; "realistic" scenario applies them.
 # ---------------------------------------------------------------------------
 BT_EXEC_COSTS = {
+    # Default backtest: conservative half-spreads (~10× measured Bitstamp median).
     "half_spread_bps": {
-        "venue_a": 5.0,   # Bitstamp — wider spread, lower liquidity
-        "venue_b": 1.5,   # Binance/LMAX — tighter institutional spread
+        "venue_a": 5.0,
+        "venue_b": 1.5,
     },
-    "slippage_bps_per_100k": 2.0,   # linear market-impact per €100k notional
+    # Calibrated half-spreads are measured from supplied pre-period quote files.
+    "spread_model": "conservative",   # "conservative" | "calibrated"
+    "slippage_bps_per_100k": 2.0,
 }
 
 # =============================================================================

@@ -24,6 +24,7 @@ Credibility fixes applied (FINAL_CREDIBILITY_FIXES.md):
 """
 
 import asyncio
+from bisect import bisect_left
 import logging
 import math
 from collections import defaultdict
@@ -215,14 +216,20 @@ def _compute_daily_sharpe(
     capital_eur: float,
     ts_key: str = "ts",
     pnl_key: str = "pnl_eur",
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
 ) -> Optional[float]:
     """
     Aggregate trade PnL into calendar-day returns on capital_eur.
     sharpe = mean(daily_returns) / std(daily_returns) * sqrt(365).
-    Returns None when std == 0 or fewer than 2 days of data.
+    Returns None with fewer than 30 trades or 20 days; includes idle days.
     Label in UI: "Sharpe (daily, ann.)"
     """
-    if not trades:
+    if len(trades) < 30 or capital_eur <= 0:
+        return None
+    start_dt = start_dt or datetime.fromtimestamp(min(t[ts_key] for t in trades) / 1000, timezone.utc)
+    end_dt = end_dt or datetime.fromtimestamp(max(t[ts_key] for t in trades) / 1000, timezone.utc)
+    if (end_dt - start_dt).total_seconds() < 20 * 86400:
         return None
 
     daily: Dict[str, float] = defaultdict(float)
@@ -231,8 +238,10 @@ def _compute_daily_sharpe(
         day = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
         daily[day] += t[pnl_key]
 
-    if len(daily) < 2:
-        return None
+    day = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    while day < end_dt:
+        daily.setdefault(day.strftime("%Y-%m-%d"), 0.0)
+        day += timedelta(days=1)
 
     daily_returns = np.array([v / capital_eur for v in daily.values()])
     mu  = float(np.mean(daily_returns))
@@ -245,6 +254,24 @@ def _compute_daily_sharpe(
 # ---------------------------------------------------------------------------
 # P4 — Cost model application
 # ---------------------------------------------------------------------------
+
+def _spread_pct_from_prices(buy_price: float, sell_price: float) -> float:
+    """Executable spread % after cost-adjusted leg prices (before fee multiplier)."""
+    mid = (buy_price + sell_price) / 2.0
+    if mid <= 0:
+        return 0.0
+    return (sell_price - buy_price) / mid * 100.0
+
+
+def _resolve_fill_index(i: int, ts_arr: List[int], latency_ms: int) -> Optional[int]:
+    """Bar i+1 for candles; earliest index with ts >= ts[i]+latency for quote BT."""
+    if latency_ms <= 0:
+        j = i + 1
+        return j if j < len(ts_arr) else None
+    target = ts_arr[i] + latency_ms
+    j = bisect_left(ts_arr, target, lo=i + 1)
+    return j if j < len(ts_arr) else None
+
 
 def _apply_exec_costs(
     mid_buy: float,
@@ -285,17 +312,19 @@ def _simulate(
     capital_eur:   float,
     apply_exec_costs: bool,
     exec_costs:   dict,
+    fill_latency_ms: int = 0,
+    fx_cost_bps: Optional[float] = None,
 ) -> Tuple[List[dict], List[Tuple[int, float]]]:
     """
     Run the arbitrage simulation once.
 
-    P1: All gate-passing trades are booked — losses included.
-    P2: Fills use bar i+1 prices (execution lag = 1 bar / 1 min, conservative).
-    P4: When apply_exec_costs=True, mid prices are adjusted for half-spread
-        + slippage.  Break-even check uses the SAME adjusted prices.
-        When apply_exec_costs=False (upper-bound), raw mid prices are used.
+    F1: Break-even gate uses signal-bar (i) cost-adjusted prices only.
+    P2: Fills use bar i+1 (or first snapshot >= i + fill_latency_ms).
+    P1: All committed trades are booked — losses at fill included.
     """
-    be_fee_pct    = (venue_a_taker + venue_b_taker) * 100
+    from src.crypto_hft_tool.config import FX_COST_BPS
+
+    fx_cost_rate = (FX_COST_BPS if fx_cost_bps is None else fx_cost_bps) / 10_000.0
     cooldown_ms   = COOLDOWN_MIN * 60_000
     last_trade_ts = 0
     cumulative    = 0.0
@@ -314,83 +343,96 @@ def _simulate(
         if math.isnan(z):
             continue
 
-        # P2: require a next bar for fill prices
-        if i + 1 >= n:
+        fill_i = _resolve_fill_index(i, ts_arr, fill_latency_ms)
+        if fill_i is None:
             continue
 
         # Gate: z-score + cooldown
         if not (abs(z) >= ZSCORE_TH and (ts - last_trade_ts) >= cooldown_ms):
             continue
 
-        # Signal bar mid prices (used only for spread direction check)
         pa_sig = price_a_arr[i]
         pb_sig = price_b_arr[i]
 
-        # P2: execution prices from bar i+1
-        pa_fill = price_a_arr[i + 1]
-        pb_fill = price_b_arr[i + 1]
-
         # Direction from signal-bar spread
         if sp > 0:
-            # Bitstamp expensive → SELL A, BUY B
-            mid_buy,  mid_sell  = pb_fill, pa_fill
+            mid_buy_sig, mid_sell_sig = pb_sig, pa_sig
             buy_venue, sell_venue = "venue_b", "venue_a"
             fee_buy, fee_sell   = venue_b_taker, venue_a_taker
             direction = "SELL Bitstamp / BUY Binance→EUR"
             buy_ex, sell_ex     = "Binance→EUR", "Bitstamp"
         else:
-            # Binance expensive → BUY A, SELL B
-            mid_buy,  mid_sell  = pa_fill, pb_fill
+            mid_buy_sig, mid_sell_sig = pa_sig, pb_sig
             buy_venue, sell_venue = "venue_a", "venue_b"
             fee_buy, fee_sell   = venue_a_taker, venue_b_taker
             direction = "BUY Bitstamp / SELL Binance→EUR"
             buy_ex, sell_ex     = "Bitstamp", "Binance→EUR"
 
-        # P4: apply execution costs when requested
-        slip_bps_applied = 0.0
+        # F1: break-even gate on signal bar (i) only
         if apply_exec_costs:
-            adj_buy, adj_sell, slip_bps_applied = _apply_exec_costs(
-                mid_buy, mid_sell, buy_venue, sell_venue, capital_eur, exec_costs
+            sig_buy, sig_sell, _ = _apply_exec_costs(
+                mid_buy_sig, mid_sell_sig, buy_venue, sell_venue, capital_eur, exec_costs
             )
         else:
-            adj_buy, adj_sell = mid_buy, mid_sell
+            sig_buy, sig_sell = mid_buy_sig, mid_sell_sig
 
-        buy_price  = adj_buy
-        sell_price = adj_sell
-
-        # Break-even gate uses same adjusted prices
-        eff_sell = sell_price * (1.0 - fee_sell)
-        eff_buy  = buy_price  * (1.0 + fee_buy)
-        if eff_sell <= eff_buy:
+        eff_sell_sig = sig_sell * (1.0 - fee_sell)
+        eff_buy_sig  = sig_buy  * (1.0 + fee_buy)
+        fx_sig = (sig_buy if buy_venue == "venue_b" else sig_sell) * fx_cost_rate
+        if eff_sell_sig <= eff_buy_sig + fx_sig:
             continue
 
-        # P&L
+        signal_spread_pct = _spread_pct_from_prices(sig_buy, sig_sell)
+
+        # Fill prices from fill bar (committed regardless of fill-time profitability)
+        pa_fill, pb_fill = price_a_arr[fill_i], price_b_arr[fill_i]
+        mid_buy_fill, mid_sell_fill = ((pb_fill, pa_fill) if sp > 0 else (pa_fill, pb_fill))
+        slip_bps_applied = 0.0
+        if apply_exec_costs:
+            buy_price, sell_price, slip_bps_applied = _apply_exec_costs(
+                mid_buy_fill, mid_sell_fill, buy_venue, sell_venue, capital_eur, exec_costs
+            )
+        else:
+            buy_price, sell_price = mid_buy_fill, mid_sell_fill
+
+        realized_spread_pct = _spread_pct_from_prices(buy_price, sell_price)
+
         amount   = capital_eur / buy_price
         gross    = amount * (sell_price - buy_price)
-        fees_eur = capital_eur * fee_buy + amount * sell_price * fee_sell
-        pnl      = gross - fees_eur   # may be negative — P1: no skip
+        fx_cost_eur = amount * (buy_price if buy_venue == "venue_b" else sell_price) * fx_cost_rate
+        fees_eur = (
+            capital_eur * fee_buy
+            + amount * sell_price * fee_sell
+            + fx_cost_eur
+        )
+        pnl      = gross - fees_eur
 
-        # P1: book unconditionally (no `if pnl <= 0: continue`)
         cumulative    += pnl
         last_trade_ts  = ts
+        equity_pts.append((ts_arr[fill_i], cumulative))
 
         trades.append({
-            "ts":            ts,
-            "ts_str":        datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
-            "direction":     direction,
-            "spread_pct":    round(sp, 6),
-            "z_score":       round(z, 4),
-            "price_a_eur":   round(pa_sig, 4),
-            "price_b_eur":   round(pb_sig, 4),
-            "fill_a_eur":    round(pa_fill, 4),
-            "fill_b_eur":    round(pb_fill, 4),
-            "amount":        round(amount, 6),
-            "gross_eur":     round(gross, 4),
-            "fees_eur":      round(fees_eur, 4),
-            "pnl_eur":       round(pnl, 4),
-            "buy_exchange":  buy_ex,
-            "sell_exchange": sell_ex,
-            "slip_bps":      round(slip_bps_applied, 3),
+            "ts":                  ts_arr[fill_i],
+            "signal_ts":           ts,
+            "fill_ts":             ts_arr[fill_i],
+            "fx_cost_eur":         round(fx_cost_eur, 4),
+            "ts_str":              datetime.fromtimestamp(ts_arr[fill_i] / 1000, tz=timezone.utc).isoformat(),
+            "direction":           direction,
+            "spread_pct":          round(sp, 6),
+            "signal_spread_pct":   round(signal_spread_pct, 6),
+            "realized_spread_pct": round(realized_spread_pct, 6),
+            "z_score":             round(z, 4),
+            "price_a_eur":         round(pa_sig, 4),
+            "price_b_eur":         round(pb_sig, 4),
+            "fill_a_eur":          round(pa_fill, 4),
+            "fill_b_eur":          round(pb_fill, 4),
+            "amount":              round(amount, 6),
+            "gross_eur":           round(gross, 4),
+            "fees_eur":            round(fees_eur, 4),
+            "pnl_eur":             round(pnl, 4),
+            "buy_exchange":        buy_ex,
+            "sell_exchange":       sell_ex,
+            "slip_bps":            round(slip_bps_applied, 3),
         })
 
     if ts_arr:
@@ -440,18 +482,39 @@ def _build_scenario_result(
         peak  = max(peak, run)
         max_dd = max(max_dd, peak - run)
 
-    # P5: daily Sharpe
-    sharpe = _compute_daily_sharpe(trades, capital_eur)
+    from src.crypto_hft_tool.config import FX_COST_BPS, POOLS, ECB_DFR
 
-    # Break-even pct using fee-only (cost model amounts shown separately in meta)
-    be_fee_pct = (venue_a_taker + venue_b_taker) * 100
+    duration_hours = (end_dt - start_dt).total_seconds() / 3600.0
+    duration_days  = duration_hours / 24.0
+
+    # P5 / F5: daily Sharpe — hide when sample too small
+    sharpe = (
+        _compute_daily_sharpe(trades, capital_eur, start_dt=start_dt, end_dt=end_dt)
+        if n >= 30 and duration_days >= 20
+        else None
+    )
+
+    carry_eur = capital_eur * POOLS * ECB_DFR * duration_hours / 8760.0
+    net_after_carry = total_pnl - carry_eur
+
+    fx_bps = 0.0 if symbol == "btc-eur-kraken" else FX_COST_BPS
+    # Break-even pct: fees + FX desk cost (bps)
+    be_fee_pct = (venue_a_taker + venue_b_taker) * 100 + fx_bps / 100.0
 
     # Exec cost meta for UI display
     slip_bps = exec_costs["slippage_bps_per_100k"] * (capital_eur / 100_000) if apply_exec_costs else 0.0
+    spread_model = exec_costs.get("spread_model", "conservative")
     exec_meta = {
+        "spread_model":            spread_model,
         "half_spread_bps_venue_a": exec_costs["half_spread_bps"]["venue_a"] if apply_exec_costs else 0.0,
         "half_spread_bps_venue_b": exec_costs["half_spread_bps"]["venue_b"] if apply_exec_costs else 0.0,
         "slippage_bps":            round(slip_bps, 3),
+        "fx_cost_bps":             fx_bps,
+        "calibration_source": exec_costs.get("calibration_source"),
+        "calibration_samples": exec_costs.get("calibration_samples"),
+        "carry_eur":               round(carry_eur, 4),
+        "net_after_carry_eur":     round(net_after_carry, 4),
+        "carry_dfr_source":        "ECB deposit facility 2.50% (16 Sep 2026)",
     }
 
     # Equity curve (downsampled)
@@ -490,6 +553,9 @@ def _build_scenario_result(
             "loss_trades":          loss,
             "win_rate_pct":         round(wins / n * 100, 2) if n > 0 else 0.0,
             "total_pnl_eur":        round(total_pnl,  4),
+            "carry_eur": round(carry_eur, 4),
+            "net_after_carry_eur": round(net_after_carry, 4),
+            "fx_cost_eur": round(sum(t.get("fx_cost_eur", 0) for t in trades), 4),
             "gross_pnl_eur":        round(gross_pnl,  4),
             "total_fees_eur":       round(total_fees, 4),
             "max_drawdown_eur":     round(max_dd,     4),
@@ -519,6 +585,166 @@ def _build_scenario_result(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _exec_costs_resolved(spread_model: str, quote_path=None, symbol="btc-eur", before_ts=None) -> dict:
+    """Calibrate only from recorded quotes preceding the evaluation window."""
+    from .config import BT_EXEC_COSTS
+    from .quote_data import read_quotes, midpoint
+    if spread_model not in ("conservative", "calibrated"):
+        raise ValueError("spread_model must be conservative or calibrated")
+    ec = {
+        "half_spread_bps": dict(BT_EXEC_COSTS["half_spread_bps"]),
+        "slippage_bps_per_100k": BT_EXEC_COSTS["slippage_bps_per_100k"],
+        "spread_model": spread_model,
+    }
+    if spread_model == "calibrated":
+        if not quote_path or before_ts is None:
+            raise ValueError("Calibrated costs require a quote file/directory with snapshots before the backtest start")
+        rows = [r for r in read_quotes(quote_path, symbol) if r["fresh"] and r["ts"] < before_ts]
+        if not rows:
+            raise ValueError("No valid calibration quotes precede the backtest start")
+        ec["half_spread_bps"] = {
+            f"venue_{venue}": float(np.median([
+                float(min(r[venue]["asks"]) - max(r[venue]["bids"])) / (2 * midpoint(r[venue])) * 10_000
+                for r in rows])) for venue in ("a", "b")
+        }
+        ec["calibration_source"] = str(quote_path)
+        ec["calibration_samples"] = len(rows)
+    return ec
+
+
+def run_quote_backtest(
+    path=None, latency_ms=300, tier=None, capital=1000, *, quote_path=None,
+    symbol="btc-eur", start_dt=None, end_dt=None, venue_a_taker=None,
+    venue_b_taker=None, capital_eur=None, tier_label="custom", spread_model="conservative",
+) -> dict:
+    """Signal on snapshot t; fill fixed quantity on the first later snapshot
+    at/after t + latency. Uses executable side-specific FX and full-size VWAP.
+    A missing/stale/insufficient first fill is reported, never searched past.
+    """
+    from .config import FX_COST_BPS, BSDEX_VOLUME_TIERS, BSDEX_DEFAULT_TIER_IDX
+    from .quote_data import read_quotes, midpoint, vwap
+    if symbol not in BINANCE_SYMBOL_MAP:
+        raise ValueError("Recorded quotes support btc-eur and eth-eur")
+    if latency_ms < 0:
+        raise ValueError("latency_ms must be nonnegative")
+    capital_eur = capital if capital_eur is None else capital_eur
+    if not math.isfinite(capital_eur) or capital_eur <= 0:
+        raise ValueError("capital must be positive and finite")
+    if tier is not None and (not isinstance(tier, int) or not 0 <= tier < len(BSDEX_VOLUME_TIERS)):
+        raise ValueError("tier must be a valid volume-tier index")
+    preset = BSDEX_VOLUME_TIERS[BSDEX_DEFAULT_TIER_IDX if tier is None else tier]
+    venue_a_taker = preset["bitstamp_taker"] if venue_a_taker is None else venue_a_taker
+    venue_b_taker = preset["lmax_taker"] if venue_b_taker is None else venue_b_taker
+    if any(not math.isfinite(f) or f < 0 for f in (venue_a_taker, venue_b_taker)):
+        raise ValueError("Fees must be finite and nonnegative")
+    if tier is not None:
+        tier_label = preset["label"]
+    rows = read_quotes(quote_path or path, symbol)
+    if not rows:
+        raise ValueError("No quotes for selected market")
+    def utc(dt):
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    start_dt = utc(start_dt) if start_dt else datetime.fromtimestamp(rows[0]["ts"] / 1000, timezone.utc)
+    end_dt = utc(end_dt) if end_dt else datetime.fromtimestamp(rows[-1]["ts"] / 1000, timezone.utc)
+    if end_dt <= start_dt:
+        raise ValueError("End date must be after start date")
+    available_start = datetime.fromtimestamp(rows[0]["ts"] / 1000, timezone.utc).isoformat()
+    available_end = datetime.fromtimestamp(rows[-1]["ts"] / 1000, timezone.utc).isoformat()
+    rows = [r for r in rows if start_dt.timestamp() * 1000 <= r["ts"] <= end_dt.timestamp() * 1000]
+    if len(rows) < 2:
+        raise ValueError(f"No usable quotes in the selected dates. Available {symbol} quotes: {available_start} to {available_end}. Select dates inside this range.")
+    if rows[-1]["ts"] - rows[0]["ts"] < ZSCORE_WIN * 60_000:
+        raise ValueError(f"Recorded quotes need at least {ZSCORE_WIN} minutes for the signal window. Available {symbol} quotes: {available_start} to {available_end}. Keep the backend running to collect more data.")
+    ts_arr = [r["ts"] for r in rows]
+    a = np.array([midpoint(r["a"]) for r in rows])
+    b = np.array([midpoint(r["b"]) for r in rows])
+    spreads = (a - b) / b * 100
+    # Preserve the 60-minute signal window at a one-second recording cadence.
+    # Only earlier snapshots contribute to the rolling mean and variance.
+    z_scores = np.full(len(rows), np.nan)
+    sums = np.r_[0., np.cumsum(spreads)]
+    squares = np.r_[0., np.cumsum(spreads ** 2)]
+    for i, ts in enumerate(ts_arr):
+        left = bisect_left(ts_arr, ts - ZSCORE_WIN * 60_000)
+        count = i - left
+        if ts - ts_arr[0] < ZSCORE_WIN * 60_000 or count < 2:
+            continue
+        mean = (sums[i] - sums[left]) / count
+        variance = max(0., (squares[i] - squares[left]) / count - mean * mean)
+        z_scores[i] = (spreads[i] - mean) / math.sqrt(variance) if variance > 1e-20 else 0.
+    trades, failures = [], []
+    equity = [(ts_arr[0], 0.)]
+    cumulative, last_signal, busy_until = 0., -float("inf"), -float("inf")
+    for i, row in enumerate(rows):
+        ts = row["ts"]
+        if (not row["fresh"] or not np.isfinite(z_scores[i]) or abs(z_scores[i]) < ZSCORE_TH
+                or ts - last_signal < COOLDOWN_MIN * 60_000 or ts <= busy_until):
+            continue
+        sell_a = spreads[i] > 0
+        buy_venue, sell_venue = ("b", "a") if sell_a else ("a", "b")
+        fee_buy, fee_sell = (venue_b_taker, venue_a_taker) if sell_a else (venue_a_taker, venue_b_taker)
+        amount = capital_eur / float(min(row[buy_venue]["asks"]))
+        sig_buy = vwap(row[buy_venue], "buy", amount)
+        sig_sell = vwap(row[sell_venue], "sell", amount)
+        if sig_buy is None or sig_sell is None:
+            continue
+        fx_rate = FX_COST_BPS / 10_000
+        fx_signal = (sig_buy if sell_a else sig_sell) * fx_rate
+        if sig_sell * (1 - fee_sell) <= sig_buy * (1 + fee_buy) + fx_signal:
+            continue
+        last_signal = ts
+        j = bisect_left(ts_arr, ts + latency_ms, lo=i + 1)
+        if j == len(rows):
+            failures.append({"signal_ts": ts, "reason": "NO_FILL_SNAPSHOT"})
+            continue
+        fill = rows[j]
+        busy_until = fill["ts"]
+        if not fill["fresh"] or fill["ts"] - (ts + latency_ms) > 2000:
+            failures.append({"signal_ts": ts, "fill_ts": fill["ts"], "reason": "QUOTE_GAP_OR_STALE"})
+            continue
+        buy = vwap(fill[buy_venue], "buy", amount)
+        sell = vwap(fill[sell_venue], "sell", amount)
+        if buy is None or sell is None:
+            failures.append({"signal_ts": ts, "fill_ts": fill["ts"], "reason": "INSUFFICIENT_DEPTH"})
+            continue
+        gross = amount * (sell - buy)
+        fx_cost = amount * (buy if sell_a else sell) * fx_rate
+        fees = amount * (buy * fee_buy + sell * fee_sell) + fx_cost
+        pnl = gross - fees
+        cumulative += pnl
+        equity.append((fill["ts"], cumulative))
+        trades.append({
+            "ts": fill["ts"], "ts_str": datetime.fromtimestamp(fill["ts"] / 1000, timezone.utc).isoformat(),
+            "signal_ts": ts, "fill_ts": fill["ts"], "fill_latency_ms": fill["ts"] - ts,
+            "direction": "SELL Bitstamp / BUY Binance→EUR" if sell_a else "BUY Bitstamp / SELL Binance→EUR",
+            "buy_exchange": "Binance→EUR" if sell_a else "Bitstamp",
+            "sell_exchange": "Bitstamp" if sell_a else "Binance→EUR",
+            "spread_pct": float(spreads[i]), "z_score": float(z_scores[i]),
+            "signal_spread_pct": _spread_pct_from_prices(sig_buy, sig_sell),
+            "realized_spread_pct": _spread_pct_from_prices(buy, sell),
+            "price_a_eur": a[i], "price_b_eur": b[i],
+            "fill_a_eur": sell if sell_a else buy, "fill_b_eur": buy if sell_a else sell,
+            "amount": amount, "gross_eur": gross, "fees_eur": fees, "pnl_eur": pnl,
+            "fx_cost_eur": fx_cost, "price_model": "recorded_vwap", "slip_bps": None,
+        })
+    equity.append((ts_arr[-1], cumulative))
+    ec = {"half_spread_bps": {"venue_a": 0., "venue_b": 0.},
+          "slippage_bps_per_100k": 0., "spread_model": "recorded executable depth"}
+    result = _build_scenario_result(
+        trades, equity, ts_arr, spreads, z_scores, symbol, BITSTAMP_SYMBOL_MAP[symbol],
+        BINANCE_SYMBOL_MAP[symbol], start_dt, end_dt, venue_a_taker, venue_b_taker,
+        capital_eur, tier_label, True, ec, "recorded-quotes-eurusdt-ws", "realistic",
+    )
+    result["summary"].update({"data_sources": "Recorded Bitstamp + Binance + EURUSDT top-5 WS books",
+                              "snapshots_processed": len(rows), "failed_fills": len(failures)})
+    result["failed_fills"] = failures
+    return {"realistic": result, "upper_bound": None,
+            "meta": {"data_source": "recorded_quotes", "quote_path": str(quote_path or path),
+                     "fill_latency_ms": latency_ms, "fx_granularity": "recorded-quotes-eurusdt-ws",
+                     "spread_model": "recorded executable depth",
+                     "scenario_notes": "Full-size VWAP from recorded books; no synthetic spread/slippage surcharge."}}
+
+
 async def run_historical_backtest(
     symbol:         str,       # "btc-eur" | "eth-eur" | "btc-eur-kraken"
     start_dt:       datetime,
@@ -527,6 +753,10 @@ async def run_historical_backtest(
     venue_b_taker:  float,
     capital_eur:    float,
     tier_label:     str = "custom",
+    data_source:    str = "candles",
+    quote_path:     Optional[str] = None,
+    latency_ms:     int = 300,
+    spread_model:   str = "conservative",
 ) -> dict:
     """
     Full historical backtest returning dual scenarios:
@@ -541,6 +771,28 @@ async def run_historical_backtest(
     """
     from src.crypto_hft_tool.config import BT_EXEC_COSTS
 
+    if not math.isfinite(capital_eur) or capital_eur <= 0:
+        raise ValueError("capital_eur must be positive and finite")
+    if any(not math.isfinite(f) or f < 0 for f in (venue_a_taker, venue_b_taker)):
+        raise ValueError("Fees must be finite and nonnegative")
+    if data_source not in ("candles", "quotes"):
+        raise ValueError("Unknown data source")
+    if data_source == "quotes":
+        if not quote_path:
+            raise ValueError("quote_path is required when data_source='quotes'")
+        return await asyncio.to_thread(run_quote_backtest,
+            quote_path=quote_path,
+            symbol=symbol,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            venue_a_taker=venue_a_taker,
+            venue_b_taker=venue_b_taker,
+            capital_eur=capital_eur,
+            tier_label=tier_label,
+            latency_ms=latency_ms,
+            spread_model=spread_model,
+        )
+
     # ---- guard rails -------------------------------------------------------
     if not start_dt.tzinfo:
         start_dt = start_dt.replace(tzinfo=timezone.utc)
@@ -552,7 +804,7 @@ async def run_historical_backtest(
         end_dt = now - timedelta(minutes=2)
 
     delta_days = (end_dt - start_dt).total_seconds() / 86400
-    if delta_days < 0:
+    if delta_days <= 0:
         raise ValueError("End date must be after start date.")
     if delta_days > MAX_DAYS:
         raise ValueError(
@@ -655,19 +907,21 @@ async def run_historical_backtest(
     z_scores = _rolling_zscore(spreads, ZSCORE_WIN)
 
     # ---- P6: run simulation twice ------------------------------------------
-    exec_costs = BT_EXEC_COSTS
+    exec_costs = _exec_costs_resolved(spread_model, quote_path, symbol, since_ms)
 
     trades_real, equity_real = _simulate(
         ts_arr, price_a_arr, price_b_arr, spreads, z_scores,
         venue_a_taker, venue_b_taker, capital_eur,
         apply_exec_costs=True,
         exec_costs=exec_costs,
+        fx_cost_bps=0 if is_control_pair else None,
     )
     trades_ub, equity_ub = _simulate(
         ts_arr, price_a_arr, price_b_arr, spreads, z_scores,
         venue_a_taker, venue_b_taker, capital_eur,
         apply_exec_costs=False,
         exec_costs=exec_costs,
+        fx_cost_bps=0 if is_control_pair else None,
     )
 
     common_kwargs = dict(
