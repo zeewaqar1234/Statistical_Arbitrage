@@ -73,7 +73,7 @@ footer{border-top:1px solid var(--rule);padding-top:16px}
 <div class="wrap">
 
 <header style="display:flex;flex-direction:column;gap:12px">
-  <h3>Explainer guide · BSDEX vs World engine · data as of 11–12 Oct 2026</h3>
+  <h3>Explainer guide · BSDEX vs World engine · verified run 11 Oct · fresh market run 12 Oct 2026</h3>
   <h1>Cross-venue crypto stat-arb: what it does and why it doesn't pay</h1>
   <p class="lede">The tool watches the same coin (BTC, ETH) on a EUR exchange and a USDT exchange. When the gap between them is unusually wide <i>and</i> wider than all costs, it buys the cheap side and sells the rich side at the same time.</p>
 </header>
@@ -236,6 +236,7 @@ footer{border-top:1px solid var(--rule);padding-top:16px}
     <div class="legend"><span><i class="sw" style="background:var(--blue)"></i>Break-even spread (fees + FX)</span><span><i class="sw" style="background:var(--orange)"></i>Observed executable spread: BTC −0.42 bps, ETH −0.59 bps</span></div>
   </div>
   <p>Every bar is to the right of zero and the market sits just left of it. No fee tier closes that gap.</p>
+  <div class="box tint"><h3>Check of the backtest's spread assumption (measured 12 Oct)</h3><p>The backtest charges a 5 bps half-spread on Bitstamp. Measured over 5 minutes: <b>0.37 bps</b> at the top of the BTC book and <b>1.99 bps</b> for a full €100k order (ETH: 0.28 and 2.84). So the 5 bps assumption is deliberately cautious; it is not the reason the backtest loses.</p></div>
 </section>
 
 <section>
@@ -298,12 +299,54 @@ footer{border-top:1px solid var(--rule);padding-top:16px}
 </section>
 
 <section>
-  <h2><span class="n">09</span>Why it doesn't make money</h2>
+  <h2><span class="n">09</span>Fresh run on live market data, 12 Oct 2026</h2>
+  <p>Binance blocks connections from the cloud region this guide was built in (HTTP 451). So the Binance leg can only be run on your own machine. What could run here, on real data: the repo's FX-free <b>control pair</b> (Bitstamp EUR vs Kraken EUR) through the same backtest code, and a live order-book sample of both venues.</p>
+  <h3>A · Live books: best executable gap for a €100k trade, Bitstamp ↔ Kraken (BTC and ETH, EUR)</h3>
+  <div class="chart">
+    <svg viewBox="0 0 720 230" role="img" aria-label="Range chart of executable cross-venue spread in basis points. BTC full €100k: median minus 2.6, range minus 4.9 to minus 1.1. ETH full €100k: median minus 3.4, range minus 8.1 to minus 0.8. Top of book only: around zero, at most plus 2.3 for BTC and plus 3.9 for ETH. Break-even lines at 8 and 16 bps are far to the right.">
+      <line class="ax" x1="150" y1="20" x2="150" y2="186"/><line class="ax" x1="240" y1="20" x2="240" y2="186"/><line class="ax" x1="420" y1="20" x2="420" y2="186"/><line class="ax" x1="510" y1="20" x2="510" y2="186"/><line class="ax" x1="600" y1="20" x2="600" y2="186"/><line class="ax" x1="690" y1="20" x2="690" y2="186"/>
+      <line class="zero" x1="330" y1="20" x2="330" y2="186"/>
+      <text x="150" y="204" text-anchor="middle">−10</text><text x="240" y="204" text-anchor="middle">−5</text><text x="330" y="204" text-anchor="middle">0</text><text x="420" y="204" text-anchor="middle">5</text><text x="510" y="204" text-anchor="middle">10</text><text x="600" y="204" text-anchor="middle">15</text><text x="690" y="204" text-anchor="middle">20 bps</text>
+      <line x1="474" y1="20" x2="474" y2="186" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/><text x="478" y="32" style="fill:var(--ink2)">8 bps: &gt;$250M break-even</text>
+      <line x1="618" y1="44" x2="618" y2="186" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/><text x="614" y="56" text-anchor="end" style="fill:var(--ink2)">16 bps: &gt;$20M</text>
+      <text class="lbl" x="140" y="79" text-anchor="end">BTC · €100k</text>
+      <rect x="241.7" y="70" width="67.9" height="12" rx="6" fill="var(--orange)" opacity=".45"><title>BTC €100k: min −4.91, max −1.13 bps</title></rect>
+      <circle cx="283.6" cy="76" r="6" fill="var(--orange)" stroke="var(--card)" stroke-width="2"><title>BTC €100k median −2.58 bps</title></circle>
+      <text class="val" x="316" y="80">−2.6</text>
+      <text class="lbl" x="140" y="111" text-anchor="end">BTC · top of book</text>
+      <rect x="309.8" y="102" width="61.2" height="12" rx="6" fill="var(--muted)" opacity=".45"><title>BTC top of book: min −1.12, max +2.28 bps</title></rect>
+      <circle cx="330.2" cy="108" r="6" fill="var(--muted)" stroke="var(--card)" stroke-width="2"><title>BTC top-of-book median +0.01 bps</title></circle>
+      <text class="lbl" x="140" y="143" text-anchor="end">ETH · €100k</text>
+      <rect x="183.9" y="134" width="132.4" height="12" rx="6" fill="var(--orange)" opacity=".45"><title>ETH €100k: min −8.12, max −0.76 bps</title></rect>
+      <circle cx="268.5" cy="140" r="6" fill="var(--orange)" stroke="var(--card)" stroke-width="2"><title>ETH €100k median −3.41 bps</title></circle>
+      <text class="val" x="322" y="144">−3.4</text>
+      <text class="lbl" x="140" y="175" text-anchor="end">ETH · top of book</text>
+      <rect x="258.9" y="166" width="140.6" height="12" rx="6" fill="var(--muted)" opacity=".45"><title>ETH top of book: min −3.95, max +3.86 bps</title></rect>
+      <circle cx="328" cy="172" r="6" fill="var(--muted)" stroke="var(--card)" stroke-width="2"><title>ETH top-of-book median −0.11 bps</title></circle>
+    </svg>
+    <div class="legend"><span><i class="sw" style="background:var(--orange)"></i>Full €100k order (dot = median, bar = min to max)</span><span><i class="sw" style="background:var(--muted)"></i>Best price only (a few € of size)</span><span><i class="sw" style="background:var(--blue)"></i>Break-even, no FX leg</span></div>
+  </div>
+  <p class="src">150 snapshots per market, every 2 s, 22:18–22:23 UTC, public REST order books. For €100k the gap was negative in 150 of 150 snapshots. At the best price it was positive about half the time, but only for a few euros of size and by at most 2.3 bps (BTC) and 3.9 bps (ETH). Five minutes is a snapshot, not a long-run average.</p>
+
+  <h3>B · Control-pair backtest on real candles (12 Oct, 10:28–22:18 UTC, €100k per leg)</h3>
+  <div class="tbl"><table>
+    <tr><th>Tier</th><th>Cost model</th><th class="r">Trades</th><th class="r">Wins</th><th class="r">Net €</th><th class="r">Avg gap at signal</th><th class="r">Avg gap at fill</th></tr>
+    <tr><td>&gt;$20M</td><td>realistic</td><td class="r">0</td><td class="r">–</td><td class="r">0.00</td><td class="r">–</td><td class="r">–</td></tr>
+    <tr><td>&gt;$20M</td><td>mid prices, no spread</td><td class="r">1</td><td class="r">0</td><td class="r bad">−152.17</td><td class="r">0.220%</td><td class="r">0.008%</td></tr>
+    <tr class="hl"><td>&gt;$250M</td><td>realistic</td><td class="r">1</td><td class="r">0</td><td class="r bad">−177.07</td><td class="r">0.115%</td><td class="r">−0.097%</td></tr>
+    <tr><td>&gt;$250M</td><td>mid prices, no spread</td><td class="r">8</td><td class="r">3</td><td class="r bad">−278.52</td><td class="r">0.107%</td><td class="r">0.045%</td></tr>
+  </table></div>
+  <div class="box tint"><h3>What this shows</h3><p>The gap the signal sees on a candle is mostly gone one minute later: <b>0.22% → 0.008%</b> and <b>0.115% → −0.097%</b>. This happens even with no FX leg and even when bid/ask costs are switched off. The loss comes from the signal, not from the cost assumptions.</p></div>
+  <p class="src">Kraken serves only the last ~12 hours of 1-minute candles, hence the short window. Carry for the window: €13.49. Break-even without FX: 0.16% (&gt;$20M), 0.08% (&gt;$250M).</p>
+</section>
+
+<section>
+  <h2><span class="n">10</span>Why it doesn't make money</h2>
   <div class="tbl"><table>
     <tr><th>#</th><th>Constraint</th><th>Evidence</th><th class="r">Size</th></tr>
-    <tr><td>1</td><td><b>No real gap.</b> The two books overlap; buying one and selling the other loses before fees.</td><td>Live executable spread, 11 Oct</td><td class="r">−0.4 to −0.6 bps</td></tr>
+    <tr><td>1</td><td><b>No real gap.</b> The two books overlap; buying one and selling the other loses before fees.</td><td>Live check 11 Oct (vs Binance); 5-min sample 12 Oct, €100k (Bitstamp vs Kraken)</td><td class="r">−0.4 to −0.6 bps; −2.6 to −3.4 bps</td></tr>
     <tr><td>2</td><td><b>Taker fees on both legs.</b> Paying to cross twice.</td><td>Fee tier table</td><td class="r">8–16 bps</td></tr>
-    <tr><td>3</td><td><b>Candle gaps are timing noise.</b> Last trades on two venues at different seconds; gone by the next bar.</td><td>0 / 7 winners</td><td class="r">−22.1 bps / trade</td></tr>
+    <tr><td>3</td><td><b>Candle gaps are timing noise.</b> Last trades on two venues at different seconds; gone by the next bar.</td><td>0 / 7 winners; control run 0.22% → 0.008% in one minute</td><td class="r">−22.1 bps / trade</td></tr>
     <tr><td>4</td><td><b>FX leg.</b> EUR ↔ USDT swap costs money and adds USDT basis risk.</td><td>FX_COST_BPS</td><td class="r">1 bp</td></tr>
     <tr><td>5</td><td><b>Idle capital.</b> Four pre-funded pools earn nothing while waiting.</td><td>Carry, 1 week, €100k/leg</td><td class="r">€191.78</td></tr>
     <tr><td>6</td><td><b>Speed.</b> 300 ms public-API reaction vs. co-located market makers who close gaps first.</td><td>LIVE_FILL_LATENCY_MS</td><td class="r">300 ms</td></tr>
@@ -312,7 +355,7 @@ footer{border-top:1px solid var(--rule);padding-top:16px}
 </section>
 
 <section>
-  <h2><span class="n">10</span>Removing the constraints with a bank's capital-markets desks</h2>
+  <h2><span class="n">11</span>Removing the constraints with a bank's capital-markets desks</h2>
   <p>Proposals for discussion. They are not tested in the tool and do not describe Deka's current set-up.</p>
   <div class="tbl"><table>
     <tr><th>Constraint</th><th>Desk</th><th>Lever</th><th>Effect</th></tr>
@@ -331,7 +374,7 @@ footer{border-top:1px solid var(--rule);padding-top:16px}
 </section>
 
 <footer>
-  <p class="src"><b>Data provenance.</b> Every number comes from the repository: <code>config.py</code>, <code>bsdex_strategy.py</code>, <code>bsdex_historical_bt.py</code>, <code>enhanced_signals.py</code>, <code>docs/engine-integrity.md</code> (verification 11 Oct 2026) and <code>ENGINE_INTEGRITY_FIXES.md</code>. A fresh live run could not be made for this guide because the build environment's network blocks Bitstamp and Binance. Venue A is a Bitstamp proxy for BSDEX; Venue B uses Binance prices with an LMAX fee model; institutional fee tiers are assumptions, not confirmed rates.</p>
+  <p class="src"><b>Data provenance.</b> Every number comes from the repository: <code>config.py</code>, <code>bsdex_strategy.py</code>, <code>bsdex_historical_bt.py</code>, <code>enhanced_signals.py</code>, <code>docs/engine-integrity.md</code> (verification 11 Oct 2026) and <code>ENGINE_INTEGRITY_FIXES.md</code>. Section 09 is a fresh run on 12 Oct 2026 using the repo's own backtest code (control pair) and a public order-book sample. Binance answers HTTP 451 (restricted location) to the cloud region used here, so the Binance leg must be re-run on your own machine with <code>scripts/verify_engine_integrity.py</code>. Venue A is a Bitstamp proxy for BSDEX; Venue B uses Binance prices with an LMAX fee model; institutional fee tiers are assumptions, not confirmed rates.</p>
 </footer>
 
 </div>
