@@ -1,0 +1,380 @@
+<title>BSDEX Stat-Arb Explainer</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one 880px reading column of short panels; each section = visual first, two lines of text max. */
+:root{
+  --paper:#F6F7F5; --card:#FFFFFF; --ink:#16213A; --ink2:#4A5468; --muted:#7A8396; --rule:#DFE3E8;
+  --blue:#2F5DA8; --orange:#C8641E; --loss:#B3261E; --gain:#2E7D4F; --tint:#EEF2F9; --warn:#FFF4E8;
+  --display:'Source Serif 4', Georgia, serif; --body:'IBM Plex Sans', Arial, sans-serif; --mono:'IBM Plex Mono', 'Courier New', monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --paper:#11161F; --card:#19202C; --ink:#E8ECF2; --ink2:#B5BDCB; --muted:#8892A3; --rule:#2C3545;
+  --blue:#5A86D0; --orange:#C8722E; --loss:#E0645C; --gain:#5DB884; --tint:#1D2738; --warn:#2A2219; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --paper:#11161F; --card:#19202C; --ink:#E8ECF2; --ink2:#B5BDCB; --muted:#8892A3; --rule:#2C3545;
+  --blue:#5A86D0; --orange:#C8722E; --loss:#E0645C; --gain:#5DB884; --tint:#1D2738; --warn:#2A2219; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font:15px/1.55 var(--body);margin:0}
+.wrap{max-width:880px;margin:0 auto;padding-inline:16px;padding-block:40px 64px;display:flex;flex-direction:column;gap:44px}
+h1,h2{font-family:var(--display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:-.01em}
+h1{font-size:2.3rem;line-height:1.1}
+h2{font-size:1.45rem;display:flex;gap:12px;align-items:baseline}
+h2 .n{font:500 .8rem var(--mono);color:var(--blue);letter-spacing:.06em}
+h3{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0;font-weight:600}
+p{margin:0;max-width:68ch;color:var(--ink2)}
+section{display:flex;flex-direction:column;gap:16px}
+.lede{font-size:1.05rem}
+.src{font-size:.8rem;color:var(--muted)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.kpi b{font:600 1.6rem var(--display);font-variant-numeric:tabular-nums}
+.kpi span{font-size:.8rem;color:var(--muted)}
+.bad{color:var(--loss)} .good{color:var(--gain)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.box{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.box.tint{background:var(--tint);border-color:transparent}
+.box.warn{background:var(--warn);border-color:transparent}
+.formula{font:500 .95rem var(--mono);color:var(--ink);background:var(--tint);padding:10px 12px;border-radius:6px;overflow-x:auto;white-space:nowrap}
+.tbl{overflow-x:auto;background:var(--card);border:1px solid var(--rule);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.88rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:none}
+td.r,th.r{text-align:right}
+tr.hl td{background:var(--tint)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch}
+.step{flex:1 1 130px;background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;font-size:.85rem;display:flex;flex-direction:column;gap:4px;min-width:0}
+.step b{font-size:.9rem}
+.step .mono{color:var(--blue)}
+.arrow{align-self:center;color:var(--muted);font-family:var(--mono)}
+.gate{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:center;background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:10px 14px}
+.gate .k{font:600 .9rem var(--mono);color:var(--blue)}
+.gate .fail{font:500 .75rem var(--mono);color:var(--muted);text-align:right}
+.gates{display:flex;flex-direction:column;gap:6px}
+.chart{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px;overflow-x:auto}
+.chart svg{display:block;width:100%;min-width:560px;height:auto}
+svg text{font-family:var(--body);font-size:12px;fill:var(--ink2)}
+svg .ax{stroke:var(--rule);stroke-width:1}
+svg .zero{stroke:var(--muted);stroke-width:1}
+svg .lbl{fill:var(--ink);font-weight:500}
+svg .val{font-family:var(--mono);font-size:11.5px;fill:var(--ink)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.8rem;color:var(--ink2)}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.tag{display:inline-block;font:500 .7rem var(--mono);padding:2px 7px;border-radius:99px;background:var(--tint);color:var(--blue)}
+ol.tight,ul.tight{margin:0;padding-left:1.2em;color:var(--ink2);display:flex;flex-direction:column;gap:4px}
+footer{border-top:1px solid var(--rule);padding-top:16px}
+@media (max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2,.grid3{grid-template-columns:1fr}h1{font-size:1.8rem}}
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:12px">
+  <h3>Explainer guide · BSDEX vs World engine · verified run 11 Oct · fresh market run 12 Oct 2026</h3>
+  <h1>Cross-venue crypto stat-arb: what it does and why it doesn't pay</h1>
+  <p class="lede">The tool watches the same coin (BTC, ETH) on a EUR exchange and a USDT exchange. When the gap between them is unusually wide <i>and</i> wider than all costs, it buys the cheap side and sells the rich side at the same time.</p>
+</header>
+
+<section>
+  <div class="kpis">
+    <div class="kpi"><b>7</b><span>trades in 7 days (verified backtest)</span></div>
+    <div class="kpi"><b class="bad">0 / 7</b><span>winning trades</span></div>
+    <div class="kpi"><b class="bad">−€1,548</b><span>net after fees and FX, €100k per leg</span></div>
+    <div class="kpi"><b>17 bps vs −0.4</b><span>cost to break even vs live executable gap (BTC)</span></div>
+  </div>
+  <p class="src">Backtest: BTC/EUR, 24 Sep–1 Oct 2026, &gt;$250M fee tier, conservative costs (<code>docs/engine-integrity.md</code>). Break-even at the default &gt;$20M tier. Live gap: 10-second public-feed check on 11 Oct 2026.</p>
+</section>
+
+<section>
+  <h2><span class="n">01</span>How the engine sees the market</h2>
+  <div class="flow">
+    <div class="step"><h3>Venue A</h3><b>Bitstamp EUR book</b><span>Stand-in for BSDEX (BSDEX API needs keys). Depth via WebSocket.</span></div>
+    <div class="step"><h3>Venue B · "World"</h3><b>Binance USDT book</b><span>Converted to EUR with live EUR/USDT bid/ask. LMAX fees applied.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><h3>Spread</h3><b>Sell-side VWAP − buy-side VWAP</b><span>Full trade size, so depth is priced in.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><h3>Decision</h3><b>z-score + 5 gates</b><span>Every 50 ms; z-score sampled once per second.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><h3>Fill</h3><b>+300 ms, both books</b><span>Booked win or lose.</span></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">02</span>Fact sheet</h2>
+  <div class="tbl"><table>
+    <tr><th>Item</th><th>Live paper engine</th><th>Candle backtest</th></tr>
+    <tr><td>Markets</td><td colspan="2">BTC-EUR, ETH-EUR</td></tr>
+    <tr><td>Data</td><td>Order books via WebSocket (Bitstamp, Binance, EUR/USDT)</td><td>1-minute candles, up to 7 days; or recorded 1-second quotes</td></tr>
+    <tr><td>Z-score window</td><td>Last 30 one-second samples (30 s)</td><td>Last 60 bars (60 min), current bar excluded</td></tr>
+    <tr><td>Entry threshold</td><td>Self-adjusting, 0.3σ to 2.0σ</td><td>Fixed 1.5σ</td></tr>
+    <tr><td>Cooldown per market</td><td>30 s</td><td>30 min (max 48 trades/day)</td></tr>
+    <tr><td>Fill</td><td>First tick ≥ 300 ms after signal, VWAP</td><td>Next bar (or first quote ≥ latency)</td></tr>
+    <tr><td>Default size</td><td>€1,000 per leg (editable in UI)</td><td>Chosen per run (verification used €100,000)</td></tr>
+    <tr><td>Default fee tier</td><td colspan="2">&gt;$20M: Bitstamp 0.10% + LMAX 0.06% taker</td></tr>
+    <tr><td>FX desk cost</td><td colspan="2">1 bp of the USDT leg's EUR notional, in the gate and in P&amp;L</td></tr>
+    <tr><td>Observed frequency</td><td>0 trades in the 10 s live check</td><td>7 trades in 7 days ≈ 1 per day</td></tr>
+  </table></div>
+  <p class="src">Sources: <code>config.py</code>, <code>bsdex_strategy.py</code>, <code>bsdex_historical_bt.py</code>, <code>enhanced_signals.py</code>.</p>
+</section>
+
+<section>
+  <h2><span class="n">03</span>The quantitative framework</h2>
+  <div class="grid2">
+    <div class="box"><h3>1 · Spread</h3>
+      <div class="formula">s = VWAP<sub>sell</sub> − VWAP<sub>buy</sub></div>
+      <p>The executable gap for the full size. Binance prices become EUR as <code>bid ÷ EURUSDT ask</code> and <code>ask ÷ EURUSDT bid</code>, the worse side each time.</p></div>
+    <div class="box"><h3>2 · Z-score</h3>
+      <div class="formula">z = (s − μ) / σ</div>
+      <p>How unusual today's gap is. μ = average gap, σ = its standard deviation, over the window. z = 2 means "two typical swings away from normal".</p></div>
+    <div class="box"><h3>3 · Cost gate</h3>
+      <div class="formula">P<sub>sell</sub>(1−f<sub>s</sub>) &gt; P<sub>buy</sub>(1+f<sub>b</sub>) + FX</div>
+      <p>After both taker fees and the 1 bp FX cost, the sale must still beat the purchase. This is the gate that actually decides.</p></div>
+    <div class="box"><h3>4 · P&amp;L per trade</h3>
+      <div class="formula">PnL = q(P<sub>sell</sub> − P<sub>buy</sub>) − fees − FX</div>
+      <p>q = capital ÷ price. Prices are the <i>fill</i> prices 300 ms (live) or one bar (backtest) after the signal.</p></div>
+    <div class="box"><h3>5 · Carry (funding cost)</h3>
+      <div class="formula">carry = capital × 4 × 2.50% × hours / 8760</div>
+      <p>Four pre-funded pools (EUR and coin on each venue) earn nothing while waiting. 2.50% = ECB deposit rate assumption.</p></div>
+    <div class="box"><h3>6 · Sharpe</h3>
+      <div class="formula">mean(daily r) / sd(daily r) × √365</div>
+      <p>Shown only with ≥ 30 trades and ≥ 20 days, idle days included, so a short lucky run can't print a big number.</p></div>
+  </div>
+
+  <h3 style="margin-top:8px">Every hard-coded value, in one line each</h3>
+  <div class="tbl"><table>
+    <tr><th>Symbol / name</th><th class="r">Value</th><th>What it means in plain words</th></tr>
+    <tr><td>Base threshold</td><td class="r mono">0.4</td><td>Starting z-level before market adjustments (live).</td></tr>
+    <tr><td>Volume factor</td><td class="r mono">1/(1+ln2) = 0.59</td><td>Order books carry no traded volume, so volume is fixed at 1. This makes the factor a constant.</td></tr>
+    <tr><td>vol_impact</td><td class="r mono">0.05</td><td>Each unit of spread choppiness raises the bar by 5%. Small effect.</td></tr>
+    <tr><td>Momentum weight</td><td class="r mono">0.1</td><td>Each €1 of spread drift over the last 5 s raises the bar by 10%.</td></tr>
+    <tr><td>Clamp</td><td class="r mono">0.3 – 2.0σ</td><td>Threshold never drops below 0.3σ or rises above 2.0σ.</td></tr>
+    <tr><td>Z window (live / backtest)</td><td class="r mono">30 s / 60 min</td><td>How much history defines "normal".</td></tr>
+    <tr><td>ZSCORE_TH (backtest)</td><td class="r mono">1.5σ</td><td>Fixed entry level on candles.</td></tr>
+    <tr><td>LIVE_FILL_LATENCY_MS</td><td class="r mono">300</td><td>Time from decision to fill. Prices can move against you meanwhile.</td></tr>
+    <tr><td>MAX_FX_AGE_SEC</td><td class="r mono">5</td><td>EUR/USDT older than 5 s blocks trading.</td></tr>
+    <tr><td>FX_COST_BPS</td><td class="r mono">1</td><td>Cost of swapping EUR and USDT on the world leg.</td></tr>
+    <tr><td>Half-spread A / B (backtest)</td><td class="r mono">5 / 1.5 bps</td><td>Candles are mid prices; this charges for crossing bid/ask. Set ~10× the measured Bitstamp median, on purpose.</td></tr>
+    <tr><td>Slippage</td><td class="r mono">2 bps per €100k</td><td>Extra price impact per leg, scaled with size.</td></tr>
+    <tr><td>POOLS · ECB_DFR</td><td class="r mono">4 · 2.50%</td><td>Capital pools tied up, and the rate they could earn elsewhere.</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>Why a self-adjusting threshold</h2>
+  <div class="grid2">
+    <div class="box tint"><h3>The idea</h3>
+      <p>A fixed bar fires too often when the gap is trending (it keeps looking "unusual" while it walks away) and too rarely in quiet, mean-reverting markets. The live bar rises when the spread is drifting and relaxes when it is calm.</p></div>
+    <div class="box"><h3>What the code really does</h3>
+      <div class="formula">T = clip(0.4 × 0.59 × (1+0.05·vol) × (1+0.1·|mom|), 0.3, 2.0)</div>
+      <p>0.4 × 0.59 = 0.24, below the 0.3 floor. So in calm markets T sits at <b>0.3σ</b>: a low bar. The cost gate does the real filtering.</p></div>
+  </div>
+  <div class="chart">
+    <svg viewBox="0 0 720 250" role="img" aria-label="Line chart: live threshold stays at 0.3 sigma until spread momentum passes about 2.7 euros, rises linearly, and caps at 2.0 sigma near 75 euros. Backtest fixed threshold of 1.5 sigma shown as dashed line.">
+      <line class="ax" x1="60" y1="220" x2="680" y2="220"/>
+      <line class="ax" x1="60" y1="129.1" x2="680" y2="129.1" stroke-dasharray="2 4"/>
+      <line class="ax" x1="60" y1="38.2" x2="680" y2="38.2" stroke-dasharray="2 4"/>
+      <text x="52" y="196.7" text-anchor="end">0.3σ</text><text x="52" y="133.1" text-anchor="end">1.0σ</text><text x="52" y="42.2" text-anchor="end">2.0σ</text>
+      <text x="60" y="238" text-anchor="middle">€0</text><text x="197.8" y="238" text-anchor="middle">€20</text><text x="335.6" y="238" text-anchor="middle">€40</text><text x="473.3" y="238" text-anchor="middle">€60</text><text x="611.1" y="238" text-anchor="middle">€80</text>
+      <line x1="60" y1="83.6" x2="680" y2="83.6" stroke="var(--orange)" stroke-width="2" stroke-dasharray="6 5"/>
+      <text x="676" y="76" text-anchor="end" style="fill:var(--ink2)">Backtest: fixed 1.5σ</text>
+      <polyline points="60,192.7 78.6,192.7 574.6,38.2 680,38.2" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linejoin="round"/>
+      <circle cx="78.6" cy="192.7" r="4.5" fill="var(--blue)" stroke="var(--card)" stroke-width="2"><title>Floor ends at |momentum| ≈ €2.7</title></circle>
+      <circle cx="574.6" cy="38.2" r="4.5" fill="var(--blue)" stroke="var(--card)" stroke-width="2"><title>Cap reached at |momentum| ≈ €74.7</title></circle>
+      <text x="90" y="186">Live: floor 0.3σ until ≈ €2.7</text>
+      <text x="566" y="58" text-anchor="end">cap 2.0σ at ≈ €75</text>
+      <text x="370" y="210" text-anchor="middle" style="fill:var(--muted)">|spread momentum| over last 5 s (EUR, vol term ≈ 1)</text>
+    </svg>
+  </div>
+  <p class="src">Momentum is a raw EUR amount, so the same setting reacts more on BTC (larger EUR moves) than on ETH. Worth normalising if the strategy is developed further.</p>
+</section>
+
+<section>
+  <h2><span class="n">05</span>The five trade gates</h2>
+  <div class="gates">
+    <div class="gate"><span class="k">G1</span><span><b>Signal:</b> |z| ≥ threshold</span><span class="fail">else HOLD</span></div>
+    <div class="gate"><span class="k">G2</span><span><b>Cost:</b> spread beats both taker fees + 1 bp FX</span><span class="fail">else SIGNAL_GATED</span></div>
+    <div class="gate"><span class="k">G3</span><span><b>Cooldown:</b> ≥ 30 s since last trade on this market</span><span class="fail">else SIGNAL_COOLDOWN</span></div>
+    <div class="gate"><span class="k">G4</span><span><b>FX fresh:</b> EUR/USDT update ≤ 5 s old</span><span class="fail">else FX_STALE</span></div>
+    <div class="gate"><span class="k">G5</span><span><b>Depth:</b> both books can fill the full size</span><span class="fail">else SIGNAL_GATED</span></div>
+  </div>
+  <p>All five pass → <span class="tag">SIGNAL</span> → <span class="tag">PENDING</span> 300 ms → <span class="tag">FILLED</span> (booked even if it loses) or <span class="tag">FILL_FAILED</span> (book too thin or stale).</p>
+</section>
+
+<section>
+  <h2><span class="n">06</span>Transaction cost model</h2>
+  <div class="tbl"><table>
+    <tr><th>Volume tier (30-day)</th><th class="r">Bitstamp taker</th><th class="r">LMAX taker</th><th class="r">FX</th><th class="r">Break-even spread</th></tr>
+    <tr><td>Retail (&lt;$5M)</td><td class="r">40 bps</td><td class="r">6</td><td class="r">1</td><td class="r"><b>47 bps</b></td></tr>
+    <tr><td>&gt;$5M</td><td class="r">12</td><td class="r">6</td><td class="r">1</td><td class="r"><b>19</b></td></tr>
+    <tr class="hl"><td>&gt;$20M · default</td><td class="r">10</td><td class="r">6</td><td class="r">1</td><td class="r"><b>17</b></td></tr>
+    <tr><td>&gt;$50M</td><td class="r">8</td><td class="r">6</td><td class="r">1</td><td class="r"><b>15</b></td></tr>
+    <tr><td>&gt;$100M</td><td class="r">6</td><td class="r">4</td><td class="r">1</td><td class="r"><b>11</b></td></tr>
+    <tr><td>&gt;$200M</td><td class="r">6</td><td class="r">3</td><td class="r">1</td><td class="r"><b>10</b></td></tr>
+    <tr class="hl"><td>&gt;$250M · verified run</td><td class="r">5</td><td class="r">3</td><td class="r">1</td><td class="r"><b>9</b></td></tr>
+    <tr><td>&gt;$1B (aspirational)</td><td class="r">3</td><td class="r">3</td><td class="r">1</td><td class="r"><b>7</b></td></tr>
+  </table></div>
+  <div class="chart">
+    <svg viewBox="0 0 720 320" role="img" aria-label="Bar chart: break-even spread by fee tier from 47 bps retail down to 7 bps at the aspirational tier, compared with an observed executable spread of about minus 0.4 bps, left of zero.">
+      <line class="ax" x1="297.3" y1="20" x2="297.3" y2="285"/><line class="ax" x1="395.5" y1="20" x2="395.5" y2="285"/><line class="ax" x1="493.6" y1="20" x2="493.6" y2="285"/><line class="ax" x1="591.8" y1="20" x2="591.8" y2="285"/><line class="ax" x1="690" y1="20" x2="690" y2="285"/>
+      <line class="zero" x1="199.1" y1="20" x2="199.1" y2="285"/>
+      <text x="199.1" y="302" text-anchor="middle">0</text><text x="297.3" y="302" text-anchor="middle">10</text><text x="395.5" y="302" text-anchor="middle">20</text><text x="493.6" y="302" text-anchor="middle">30</text><text x="591.8" y="302" text-anchor="middle">40</text><text x="690" y="302" text-anchor="middle">50 bps</text>
+      <g>
+        <text class="lbl" x="140" y="44" text-anchor="end">Retail</text><rect x="199.1" y="30" width="461.5" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>Retail: 47 bps</title></rect><text class="val" x="666" y="44">47</text>
+        <text class="lbl" x="140" y="76" text-anchor="end">&gt;$5M</text><rect x="199.1" y="62" width="186.5" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>&gt;$5M: 19 bps</title></rect><text class="val" x="391" y="76">19</text>
+        <text class="lbl" x="140" y="108" text-anchor="end">&gt;$20M default</text><rect x="199.1" y="94" width="166.9" height="20" rx="3" fill="var(--blue)"><title>&gt;$20M (default): 17 bps</title></rect><text class="val" x="372" y="108">17</text>
+        <text class="lbl" x="140" y="140" text-anchor="end">&gt;$50M</text><rect x="199.1" y="126" width="147.3" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>&gt;$50M: 15 bps</title></rect><text class="val" x="352" y="140">15</text>
+        <text class="lbl" x="140" y="172" text-anchor="end">&gt;$100M</text><rect x="199.1" y="158" width="108" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>&gt;$100M: 11 bps</title></rect><text class="val" x="313" y="172">11</text>
+        <text class="lbl" x="140" y="204" text-anchor="end">&gt;$200M</text><rect x="199.1" y="190" width="98.2" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>&gt;$200M: 10 bps</title></rect><text class="val" x="303" y="204">10</text>
+        <text class="lbl" x="140" y="236" text-anchor="end">&gt;$250M verified</text><rect x="199.1" y="222" width="88.4" height="20" rx="3" fill="var(--blue)"><title>&gt;$250M: 9 bps</title></rect><text class="val" x="293" y="236">9</text>
+        <text class="lbl" x="140" y="268" text-anchor="end">&gt;$1B aspir.</text><rect x="199.1" y="254" width="68.7" height="20" rx="3" fill="var(--blue)" opacity=".55"><title>&gt;$1B: 7 bps</title></rect><text class="val" x="274" y="268">7</text>
+      </g>
+      <rect x="192" y="22" width="5" height="262" rx="2" fill="var(--orange)"><title>Observed executable spread 11 Oct 2026: BTC −0.42 bps, ETH −0.59 bps</title></rect>
+    </svg>
+    <div class="legend"><span><i class="sw" style="background:var(--blue)"></i>Break-even spread (fees + FX)</span><span><i class="sw" style="background:var(--orange)"></i>Observed executable spread: BTC −0.42 bps, ETH −0.59 bps</span></div>
+  </div>
+  <p>Every bar is to the right of zero and the market sits just left of it. No fee tier closes that gap.</p>
+  <div class="box tint"><h3>Check of the backtest's spread assumption (measured 12 Oct)</h3><p>The backtest charges a 5 bps half-spread on Bitstamp. Measured over 5 minutes: <b>0.37 bps</b> at the top of the BTC book and <b>1.99 bps</b> for a full €100k order (ETH: 0.28 and 2.84). So the 5 bps assumption is deliberately cautious; it is not the reason the backtest loses.</p></div>
+</section>
+
+<section>
+  <h2><span class="n">07</span>Full trade cycle</h2>
+  <h3>Live engine timeline</h3>
+  <div class="flow">
+    <div class="step"><span class="mono">t = 0</span><b>Signal</b><span>All 5 gates pass. Direction, size and fees are frozen.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="mono">0 – 300 ms</span><b>Pending</b><span>No re-check. The engine does not wait for a better price.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="mono">≥ 300 ms</span><b>Fill</b><span>Walk both live books for the full size at VWAP.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="mono">Book</span><b>P&amp;L</b><span>Gross − fees − FX. Shown with signal vs realised spread.</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="mono">+30 s</span><b>Ready</b><span>Cooldown ends.</span></div>
+  </div>
+
+  <h3 style="margin-top:6px">One average trade from the verified backtest (€100k per leg, &gt;$250M tier)</h3>
+  <div class="chart">
+    <svg viewBox="0 0 720 170" role="img" aria-label="Stacked bar: modelled cost per trade 19.5 bps made of fees 8, FX 1, half-spread 6.5 and slippage 4. Below it the realised average loss of 22.1 bps, leaving 2.6 bps of adverse price move.">
+      <line class="ax" x1="150" y1="18" x2="150" y2="130"/><line class="ax" x1="258" y1="18" x2="258" y2="130"/><line class="ax" x1="366" y1="18" x2="366" y2="130"/><line class="ax" x1="474" y1="18" x2="474" y2="130"/><line class="ax" x1="582" y1="18" x2="582" y2="130"/><line class="ax" x1="690" y1="18" x2="690" y2="130"/>
+      <text x="150" y="148" text-anchor="middle">0</text><text x="258" y="148" text-anchor="middle">5</text><text x="366" y="148" text-anchor="middle">10</text><text x="474" y="148" text-anchor="middle">15</text><text x="582" y="148" text-anchor="middle">20</text><text x="690" y="148" text-anchor="middle">25 bps</text>
+      <text class="lbl" x="140" y="48" text-anchor="end">Modelled cost</text>
+      <rect x="150" y="30" width="171.8" height="26" fill="var(--blue)"><title>Exchange fees 8 bps ≈ €80</title></rect>
+      <rect x="323.8" y="30" width="19.6" height="26" fill="var(--blue)" opacity=".45"><title>FX 1 bp = €10</title></rect>
+      <rect x="345.4" y="30" width="138.4" height="26" fill="var(--orange)"><title>Half-spreads 6.5 bps ≈ €65</title></rect>
+      <rect x="485.8" y="30" width="85.4" height="26" fill="var(--orange)" opacity=".5"><title>Slippage 4 bps ≈ €40</title></rect>
+      <text class="val" x="578" y="48">19.5</text>
+      <text class="lbl" x="140" y="96" text-anchor="end">Realised loss</text>
+      <rect x="150" y="78" width="477.4" height="26" rx="3" fill="var(--loss)" opacity=".85"><title>Average realised loss 22.1 bps = €221</title></rect>
+      <text class="val" x="634" y="96">22.1</text>
+      <text x="150" y="122" style="fill:var(--muted)">≈ 2.6 bps of the loss is the price moving against the trade between signal and fill</text>
+    </svg>
+    <div class="legend"><span><i class="sw" style="background:var(--blue)"></i>Fees 8 bps (5 + 3)</span><span><i class="sw" style="background:var(--blue);opacity:.45"></i>FX 1 bp</span><span><i class="sw" style="background:var(--orange)"></i>Half-spreads 6.5 bps</span><span><i class="sw" style="background:var(--orange);opacity:.5"></i>Slippage 4 bps</span><span><i class="sw" style="background:var(--loss)"></i>Realised</span></div>
+  </div>
+  <p class="src">Realised = −€1,547.98 ÷ 7 trades ÷ €100k. FX €69.99 ÷ 7 = €10.00 per trade, which matches 1 bp. Cost split is computed from the code's parameters; the 2.6 bps residual is derived, not separately logged.</p>
+</section>
+
+<section>
+  <h2><span class="n">08</span>Backtest: before and after the integrity fixes</h2>
+  <div class="chart">
+    <svg viewBox="0 0 720 170" role="img" aria-label="Diverging bar chart of net P&amp;L on the same week: plus 275.81 euros before fixes, minus 1,547.98 after fixes, minus 1,739.76 after carry.">
+      <line class="ax" x1="223.6" y1="15" x2="223.6" y2="128"/><line class="ax" x1="346.3" y1="15" x2="346.3" y2="128"/><line class="ax" x1="469.1" y1="15" x2="469.1" y2="128"/>
+      <line class="zero" x1="591.8" y1="15" x2="591.8" y2="128"/>
+      <text x="223.6" y="146" text-anchor="middle">−€1,500</text><text x="346.3" y="146" text-anchor="middle">−€1,000</text><text x="469.1" y="146" text-anchor="middle">−€500</text><text x="591.8" y="146" text-anchor="middle">€0</text>
+      <text class="lbl" x="10" y="40">Before fixes</text><text x="10" y="54" style="fill:var(--muted)">5 trades · 100% wins</text>
+      <rect x="591.8" y="26" width="67.7" height="22" rx="3" fill="var(--gain)"><title>+€275.81 (look-ahead artefact)</title></rect><text class="val" x="664" y="42">+275.81</text>
+      <text class="lbl" x="10" y="78">After fixes</text><text x="10" y="92" style="fill:var(--muted)">7 trades · 0% wins</text>
+      <rect x="211.8" y="64" width="380" height="22" rx="3" fill="var(--loss)"><title>−€1,547.98 net after fees and FX</title></rect><text class="val" x="218" y="80" style="fill:#FFFFFF">−1,547.98</text>
+      <text class="lbl" x="10" y="116">After fixes + carry</text>
+      <rect x="164.8" y="102" width="427" height="22" rx="3" fill="var(--loss)" opacity=".7"><title>−€1,739.76 after €191.78 carry</title></rect><text class="val" x="171" y="118" style="fill:#FFFFFF">−1,739.76</text>
+    </svg>
+  </div>
+  <div class="grid3">
+    <div class="box warn"><h3>Bug 1 · look-ahead</h3><p>The gate read the <i>fill</i> bar, so it only took trades it already knew would win. Result: 100% wins, zero drawdown.</p></div>
+    <div class="box warn"><h3>Bug 2 · wrong FX</h3><p>Live used the once-a-day ECB rate. On 2 Oct: ECB 1.1225 vs tradeable 1.1267, a fake 0.37% gap.</p></div>
+    <div class="box warn"><h3>Bug 3 · instant fills</h3><p>Paper fills had zero delay, so they could never lose. Now 300 ms delay, full-depth VWAP.</p></div>
+  </div>
+  <p class="src">Before-fix figure from <code>ENGINE_INTEGRITY_FIXES.md</code> (F1–F3). The May 2026 reports in <code>reports/</code> (e.g. 1,686 BTC trades in 3 days at 100% wins) came from the old engine and should not be quoted. 19 integrity and no-look-ahead tests pass (run 12 Oct 2026). Seven trades is a small sample: the sign is reliable, the exact € figure is not.</p>
+</section>
+
+<section>
+  <h2><span class="n">09</span>Fresh run on live market data, 12 Oct 2026</h2>
+  <p>Binance blocks connections from the cloud region this guide was built in (HTTP 451). So the Binance leg can only be run on your own machine. What could run here, on real data: the repo's FX-free <b>control pair</b> (Bitstamp EUR vs Kraken EUR) through the same backtest code, and a live order-book sample of both venues.</p>
+  <h3>A · Live books: best executable gap for a €100k trade, Bitstamp ↔ Kraken (BTC and ETH, EUR)</h3>
+  <div class="chart">
+    <svg viewBox="0 0 720 230" role="img" aria-label="Range chart of executable cross-venue spread in basis points. BTC full €100k: median minus 2.6, range minus 4.9 to minus 1.1. ETH full €100k: median minus 3.4, range minus 8.1 to minus 0.8. Top of book only: around zero, at most plus 2.3 for BTC and plus 3.9 for ETH. Break-even lines at 8 and 16 bps are far to the right.">
+      <line class="ax" x1="150" y1="20" x2="150" y2="186"/><line class="ax" x1="240" y1="20" x2="240" y2="186"/><line class="ax" x1="420" y1="20" x2="420" y2="186"/><line class="ax" x1="510" y1="20" x2="510" y2="186"/><line class="ax" x1="600" y1="20" x2="600" y2="186"/><line class="ax" x1="690" y1="20" x2="690" y2="186"/>
+      <line class="zero" x1="330" y1="20" x2="330" y2="186"/>
+      <text x="150" y="204" text-anchor="middle">−10</text><text x="240" y="204" text-anchor="middle">−5</text><text x="330" y="204" text-anchor="middle">0</text><text x="420" y="204" text-anchor="middle">5</text><text x="510" y="204" text-anchor="middle">10</text><text x="600" y="204" text-anchor="middle">15</text><text x="690" y="204" text-anchor="middle">20 bps</text>
+      <line x1="474" y1="20" x2="474" y2="186" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/><text x="478" y="32" style="fill:var(--ink2)">8 bps: &gt;$250M break-even</text>
+      <line x1="618" y1="44" x2="618" y2="186" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5 4"/><text x="614" y="56" text-anchor="end" style="fill:var(--ink2)">16 bps: &gt;$20M</text>
+      <text class="lbl" x="140" y="79" text-anchor="end">BTC · €100k</text>
+      <rect x="241.7" y="70" width="67.9" height="12" rx="6" fill="var(--orange)" opacity=".45"><title>BTC €100k: min −4.91, max −1.13 bps</title></rect>
+      <circle cx="283.6" cy="76" r="6" fill="var(--orange)" stroke="var(--card)" stroke-width="2"><title>BTC €100k median −2.58 bps</title></circle>
+      <text class="val" x="316" y="80">−2.6</text>
+      <text class="lbl" x="140" y="111" text-anchor="end">BTC · top of book</text>
+      <rect x="309.8" y="102" width="61.2" height="12" rx="6" fill="var(--muted)" opacity=".45"><title>BTC top of book: min −1.12, max +2.28 bps</title></rect>
+      <circle cx="330.2" cy="108" r="6" fill="var(--muted)" stroke="var(--card)" stroke-width="2"><title>BTC top-of-book median +0.01 bps</title></circle>
+      <text class="lbl" x="140" y="143" text-anchor="end">ETH · €100k</text>
+      <rect x="183.9" y="134" width="132.4" height="12" rx="6" fill="var(--orange)" opacity=".45"><title>ETH €100k: min −8.12, max −0.76 bps</title></rect>
+      <circle cx="268.5" cy="140" r="6" fill="var(--orange)" stroke="var(--card)" stroke-width="2"><title>ETH €100k median −3.41 bps</title></circle>
+      <text class="val" x="322" y="144">−3.4</text>
+      <text class="lbl" x="140" y="175" text-anchor="end">ETH · top of book</text>
+      <rect x="258.9" y="166" width="140.6" height="12" rx="6" fill="var(--muted)" opacity=".45"><title>ETH top of book: min −3.95, max +3.86 bps</title></rect>
+      <circle cx="328" cy="172" r="6" fill="var(--muted)" stroke="var(--card)" stroke-width="2"><title>ETH top-of-book median −0.11 bps</title></circle>
+    </svg>
+    <div class="legend"><span><i class="sw" style="background:var(--orange)"></i>Full €100k order (dot = median, bar = min to max)</span><span><i class="sw" style="background:var(--muted)"></i>Best price only (a few € of size)</span><span><i class="sw" style="background:var(--blue)"></i>Break-even, no FX leg</span></div>
+  </div>
+  <p class="src">150 snapshots per market, every 2 s, 22:18–22:23 UTC, public REST order books. For €100k the gap was negative in 150 of 150 snapshots. At the best price it was positive about half the time, but only for a few euros of size and by at most 2.3 bps (BTC) and 3.9 bps (ETH). Five minutes is a snapshot, not a long-run average.</p>
+
+  <h3>B · Control-pair backtest on real candles (12 Oct, 10:28–22:18 UTC, €100k per leg)</h3>
+  <div class="tbl"><table>
+    <tr><th>Tier</th><th>Cost model</th><th class="r">Trades</th><th class="r">Wins</th><th class="r">Net €</th><th class="r">Avg gap at signal</th><th class="r">Avg gap at fill</th></tr>
+    <tr><td>&gt;$20M</td><td>realistic</td><td class="r">0</td><td class="r">–</td><td class="r">0.00</td><td class="r">–</td><td class="r">–</td></tr>
+    <tr><td>&gt;$20M</td><td>mid prices, no spread</td><td class="r">1</td><td class="r">0</td><td class="r bad">−152.17</td><td class="r">0.220%</td><td class="r">0.008%</td></tr>
+    <tr class="hl"><td>&gt;$250M</td><td>realistic</td><td class="r">1</td><td class="r">0</td><td class="r bad">−177.07</td><td class="r">0.115%</td><td class="r">−0.097%</td></tr>
+    <tr><td>&gt;$250M</td><td>mid prices, no spread</td><td class="r">8</td><td class="r">3</td><td class="r bad">−278.52</td><td class="r">0.107%</td><td class="r">0.045%</td></tr>
+  </table></div>
+  <div class="box tint"><h3>What this shows</h3><p>The gap the signal sees on a candle is mostly gone one minute later: <b>0.22% → 0.008%</b> and <b>0.115% → −0.097%</b>. This happens even with no FX leg and even when bid/ask costs are switched off. The loss comes from the signal, not from the cost assumptions.</p></div>
+  <p class="src">Kraken serves only the last ~12 hours of 1-minute candles, hence the short window. Carry for the window: €13.49. Break-even without FX: 0.16% (&gt;$20M), 0.08% (&gt;$250M).</p>
+</section>
+
+<section>
+  <h2><span class="n">10</span>Why it doesn't make money</h2>
+  <div class="tbl"><table>
+    <tr><th>#</th><th>Constraint</th><th>Evidence</th><th class="r">Size</th></tr>
+    <tr><td>1</td><td><b>No real gap.</b> The two books overlap; buying one and selling the other loses before fees.</td><td>Live check 11 Oct (vs Binance); 5-min sample 12 Oct, €100k (Bitstamp vs Kraken)</td><td class="r">−0.4 to −0.6 bps; −2.6 to −3.4 bps</td></tr>
+    <tr><td>2</td><td><b>Taker fees on both legs.</b> Paying to cross twice.</td><td>Fee tier table</td><td class="r">8–16 bps</td></tr>
+    <tr><td>3</td><td><b>Candle gaps are timing noise.</b> Last trades on two venues at different seconds; gone by the next bar.</td><td>0 / 7 winners; control run 0.22% → 0.008% in one minute</td><td class="r">−22.1 bps / trade</td></tr>
+    <tr><td>4</td><td><b>FX leg.</b> EUR ↔ USDT swap costs money and adds USDT basis risk.</td><td>FX_COST_BPS</td><td class="r">1 bp</td></tr>
+    <tr><td>5</td><td><b>Idle capital.</b> Four pre-funded pools earn nothing while waiting.</td><td>Carry, 1 week, €100k/leg</td><td class="r">€191.78</td></tr>
+    <tr><td>6</td><td><b>Speed.</b> 300 ms public-API reaction vs. co-located market makers who close gaps first.</td><td>LIVE_FILL_LATENCY_MS</td><td class="r">300 ms</td></tr>
+  </table></div>
+  <div class="box tint"><h3>The one-line answer</h3><p>The market is already arbitraged to within a fraction of a basis point. A strategy that <i>pays</i> the spread and fees can't win; one that <i>earns</i> them might.</p></div>
+</section>
+
+<section>
+  <h2><span class="n">11</span>Removing the constraints with a bank's capital-markets desks</h2>
+  <p>Proposals for discussion. They are not tested in the tool and do not describe Deka's current set-up.</p>
+  <div class="tbl"><table>
+    <tr><th>Constraint</th><th>Desk</th><th>Lever</th><th>Effect</th></tr>
+    <tr><td>Taker on both legs</td><td>Trading / market making</td><td>Quote passively on the EUR venue (e.g. BSDEX), hedge instantly on the world venue. Earn the bid/ask instead of paying it.</td><td>Turns ~6.5 bps of spread cost into income. The only lever that changes the sign.</td></tr>
+    <tr><td>Exchange fees</td><td>Trading + venue relationship</td><td>Negotiated institutional or market-maker schedule with BSDEX; aggregate bank-wide flow for tier.</td><td>17 → 7–9 bps. Helps, but not enough alone (see chart, §06).</td></tr>
+    <tr><td>FX leg (EUR ↔ USDT)</td><td>FX desk</td><td>Internal EUR/USD at interbank spread; net flows instead of swapping per trade; or hedge on a EUR or USD fiat venue.</td><td>Removes the 1 bp and the stablecoin basis risk.</td></tr>
+    <tr><td>Idle capital (4 pools)</td><td>Treasury / money markets</td><td>Fund pools at internal transfer price; size inventory to actual turnover; repo or collateral against holdings.</td><td>Cuts the €191.78/week carry drag.</td></tr>
+    <tr><td>Inventory &amp; settlement</td><td>Digital-asset custody / settlement</td><td>Hold coin on both venues, rebalance in batches, no per-trade transfers.</td><td>Both legs settle without waiting.</td></tr>
+    <tr><td>Data &amp; speed</td><td>Trading tech</td><td>Authenticated BSDEX feed (replaces Bitstamp stand-in), direct connectivity, record quotes daily.</td><td>Real venue prices; faster than 300 ms.</td></tr>
+    <tr><td>Risk</td><td>Risk controlling</td><td>Position and loss limits, kill switch, daily P&amp;L attribution (signal vs realised spread).</td><td>Required before any capital.</td></tr>
+  </table></div>
+  <div class="grid2">
+    <div class="box"><h3>Next step 1</h3><p>Run the built-in recorder for 2–4 weeks and replay quotes, so cost and gap numbers rest on more than 10 seconds and 7 trades.</p></div>
+    <div class="box"><h3>Next step 2</h3><p>Add a maker-on-A / taker-on-B mode and test it on those recordings with a realistic fill-probability model.</p></div>
+  </div>
+</section>
+
+<footer>
+  <p class="src"><b>Data provenance.</b> Every number comes from the repository: <code>config.py</code>, <code>bsdex_strategy.py</code>, <code>bsdex_historical_bt.py</code>, <code>enhanced_signals.py</code>, <code>docs/engine-integrity.md</code> (verification 11 Oct 2026) and <code>ENGINE_INTEGRITY_FIXES.md</code>. Section 09 is a fresh run on 12 Oct 2026 using the repo's own backtest code (control pair) and a public order-book sample. Binance answers HTTP 451 (restricted location) to the cloud region used here, so the Binance leg must be re-run on your own machine with <code>scripts/verify_engine_integrity.py</code>. Venue A is a Bitstamp proxy for BSDEX; Venue B uses Binance prices with an LMAX fee model; institutional fee tiers are assumptions, not confirmed rates.</p>
+</footer>
+
+</div>
