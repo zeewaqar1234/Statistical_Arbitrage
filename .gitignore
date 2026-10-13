@@ -8,3 +8,5 @@ logs/
 **/node_modules/
 backend.log
 .DS_Store
+# Test-campaign output (raw quotes and samples can be large)
+reports/campaign_*/

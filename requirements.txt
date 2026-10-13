@@ -10,3 +10,4 @@ uvicorn
 gunicorn
 sortedcontainers>=2.4.0
 pytest-asyncio>=0.21.0
+openpyxl>=3.1.0
