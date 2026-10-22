@@ -26,6 +26,7 @@ def args(**kw):
 
 def feed_with_book(bids, asks, t=0.0, venue="bitvavo"):
     f = E.VenueFeed(venue)
+    f.created_ts = -1e9
     f.on_book({"bids": bids, "asks": asks, "timestamp": None}, t)
     return f
 
@@ -153,3 +154,11 @@ def test_inventory_skew_stops_bidding_at_upper_bound():
     mm.eurc, mm.eur = 7_600 / 0.99925, 2_400            # 76% EURC > 75% bound
     mm.step(1000)
     assert mm.bid is None and mm.ask is not None
+
+
+def test_pre_session_trades_do_not_count_as_volume():
+    f = E.VenueFeed("kraken")
+    f.created_ts = 1_000_000
+    f.on_trades([{"id": "old", "price": 1.0, "amount": 500, "side": "buy", "timestamp": 100_000}], 1_000_100)
+    f.on_trades([{"id": "new", "price": 1.0, "amount": 7, "side": "buy", "timestamp": 1_000_050}], 1_000_100)
+    assert f.trades_seen == 1 and f.trade_volume_eur == 7

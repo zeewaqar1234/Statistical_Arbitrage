@@ -292,6 +292,7 @@ class VenueFeed:
         self._seen = deque(maxlen=5000)
         self._seen_set = set()
         self.last_trade_ts = None
+        self.created_ts = now_ms()   # prints older than this are history, not session flow
         self.trade_listeners = []
         self.book_listeners = []
 
@@ -337,8 +338,10 @@ class VenueFeed:
             if len(self._seen_set) > len(self._seen):
                 self._seen_set = set(self._seen)
             ex_ts = t.get("timestamp")
-            if ex_ts and self.last_trade_ts and ex_ts < self.last_trade_ts - 60_000:
-                continue  # REST backfill older than what we already have
+            if ex_ts and (ex_ts < self.created_ts - 5_000
+                          or (self.last_trade_ts and ex_ts < self.last_trade_ts - 60_000)):
+                self.last_trade_ts = max(self.last_trade_ts or 0, ex_ts)
+                continue  # REST backfill from before the session: not session volume
             tr = Trade(float(t["price"]), float(t["amount"]), t.get("side"),
                        float(ex_ts) if ex_ts else None, recv)
             if ex_ts:
