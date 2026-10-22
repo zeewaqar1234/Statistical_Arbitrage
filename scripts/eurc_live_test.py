@@ -445,6 +445,7 @@ class RestingOrder:
     queue_ahead: float | None = None
     queue_at_live: float | None = None
     cancel_ts: float | None = None  # cancel takes effect here (still fillable before)
+    cross_used: float = 0.0         # opposite-side size already credited from a crossed book
 
     def __post_init__(self):
         self.remaining = self.qty
@@ -510,14 +511,15 @@ class FillSimulator:
                 if tr.side == "buy":
                     continue  # buyer-initiated prints lift asks, not our bid
                 if tr.price < o.price - tick / 2:
-                    self._fill(o, o.remaining, tr.recv_ts, "trade_through")
+                    # The seller would have hit us first, but only for the size they traded.
+                    self._fill(o, tr.amount, tr.recv_ts, "trade_through")
                 elif o.model == "queue" and abs(tr.price - o.price) < tick / 2:
                     self._consume(o, tr, tick)
             else:
                 if tr.side == "sell":
                     continue
                 if tr.price > o.price + tick / 2:
-                    self._fill(o, o.remaining, tr.recv_ts, "trade_through")
+                    self._fill(o, tr.amount, tr.recv_ts, "trade_through")
                 elif o.model == "queue" and abs(tr.price - o.price) < tick / 2:
                     self._consume(o, tr, tick)
         self._prune(tr.recv_ts)
@@ -541,13 +543,16 @@ class FillSimulator:
             # A resting ask at our bid (or bid at our ask) means that order would have
             # matched us. The conservative model only accepts a book strictly through us.
             slack = tick / 2 if o.model == "queue" else -tick / 2
+            # Fill size is capped by the opposite size resting at/through our price, and a
+            # level that stays crossed across updates is only credited once.
             if o.side == "buy":
-                if b.best_ask is not None and b.best_ask <= o.price + slack:
-                    self._fill(o, o.remaining, t, "book_cross")
-                    continue
+                crossing = sum(q for p, q in b.asks if p <= o.price + slack)
             else:
-                if b.best_bid is not None and b.best_bid >= o.price - slack:
-                    self._fill(o, o.remaining, t, "book_cross")
+                crossing = sum(q for p, q in b.bids if p >= o.price - slack)
+            if crossing > o.cross_used + EPS:
+                self._fill(o, crossing - o.cross_used, t, "book_cross")
+                o.cross_used = crossing
+                if o.remaining <= EPS:
                     continue
             if o.model == "queue":
                 shown = b.size_at(o.side, o.price, tick)

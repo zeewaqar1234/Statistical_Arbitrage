@@ -60,6 +60,33 @@ def test_no_fill_before_order_is_live():
     assert own.fills and own.fills[0][0] == 100 and own.fills[0][2] == "trade_through"
 
 
+def test_trade_through_fill_is_capped_by_printed_size():
+    # 22 Oct run: a 0.000001 EURC print through our ask filled 2,499 EURC. Must fill only the print.
+    f = feed_with_book([[0.9969, 1000]], [[0.99695, 100]])
+    sim, own = E.FillSimulator(f), Owner()
+    sim.post(own, "sell", 1.0003, 2499, t=0, latency_ms=300, model="through")
+    sim.tick(400)
+    trade(f, 1.00099, 0.000001, "buy", 500)
+    assert sum(q for q, _, _ in own.fills) == pytest.approx(0.000001)
+    # a sweep: several prints through our bid add up, capped at our size
+    sim2, own2 = E.FillSimulator(f), Owner()
+    sim2.post(own2, "buy", 0.9951, 1890, t=0, latency_ms=300, model="through")
+    sim2.tick(400)
+    for i, (px, amt) in enumerate([(0.995, 5.0), (0.9873, 101.3), (0.98712, 46.5)]):
+        trade(f, px, amt, "sell", 600 + i)
+    assert sum(q for q, _, _ in own2.fills) == pytest.approx(152.8)
+
+
+def test_book_cross_capped_and_not_double_counted():
+    f = feed_with_book([[0.9985, 1000]], [[0.9995, 1000]])
+    sim, own = E.FillSimulator(f), Owner()
+    sim.post(own, "buy", 0.9990, 500, t=0, latency_ms=300, model="queue")
+    sim.tick(400)
+    f.on_book({"bids": [[0.9985, 1000]], "asks": [[0.9990, 120], [0.9996, 900]]}, 500)
+    f.on_book({"bids": [[0.9985, 1000]], "asks": [[0.9990, 120], [0.9996, 900]]}, 600)  # same level
+    assert sum(q for q, _, _ in own.fills) == pytest.approx(120)
+
+
 def test_queue_model_waits_for_volume_ahead():
     f = feed_with_book([[0.9990, 1000]], [[0.9995, 1000]])
     sim, own = E.FillSimulator(f), Owner()
