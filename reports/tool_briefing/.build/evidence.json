@@ -1,0 +1,32 @@
+{
+  "file": "data/quotes/2026-10-11.csv.gz",
+  "sha256": "64d534f97673d7044588578a7ad645a744a750fddf2134664c6e8d9cfcb6f82d",
+  "markets": {
+    "btc-eur": {
+      "rows": 1077,
+      "usable_rows": 1049,
+      "start": "2026-10-11T21:14:33.880000+00:00",
+      "end": "2026-10-11T21:33:55.149000+00:00",
+      "minutes": 19.354483333333334,
+      "mean_signed_mid_bps": 0.46397487251189273,
+      "mean_best_exec_bps": -0.21974754271642896,
+      "median_best_exec_bps": -0.3300357489385001,
+      "max_best_exec_bps": 1.5996329069966295,
+      "above_17_bps": 0,
+      "above_9_bps": 0
+    },
+    "eth-eur": {
+      "rows": 1077,
+      "usable_rows": 988,
+      "start": "2026-10-11T21:14:33.880000+00:00",
+      "end": "2026-10-11T21:33:55.149000+00:00",
+      "minutes": 19.354483333333334,
+      "mean_signed_mid_bps": 0.6356536103840866,
+      "mean_best_exec_bps": -0.0936227308816211,
+      "median_best_exec_bps": -0.16100058555975869,
+      "max_best_exec_bps": 2.1950310209459345,
+      "above_17_bps": 0,
+      "above_9_bps": 0
+    }
+  }
+}
