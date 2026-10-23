@@ -10,21 +10,30 @@
 
 ### Why this change
 
-The project is finished. It answered its question: **after every real cost, cross-exchange EUR crypto arbitrage has no tradeable edge.** The owner now shows the tool to senior bankers and market professionals in Frankfurt, often in a 15–30 minute slot.
+The project is finished. Over eighteen months (May 2025 – Oct 2026) it tested **three different crypto arbitrage strategies** against one yardstick, a 2.5% EUR bank deposit after every cost:
 
-Today the app is a Bloomberg-style terminal built for a trader watching it all day. A first-time viewer sees jargon (`Z-Score / Threshold`, `B/E`, `VWAP depth`, `Venue A Taker %`), the presenter's own settings, and a live number that changes every 2 seconds. They can't tell what the answer is. The owner loses the room before the point lands.
+| # | Strategy | How it makes money | Result |
+|---|---|---|---|
+| 1 | **Cross-exchange spot arbitrage** (the live engine in this app) | Buy BTC/ETH on the cheaper exchange, sell on the dearer one at the same moment | **No edge.** Gaps are a few bps; costs are 7–47 bps |
+| 2 | **Perpetual funding carry** | Hold the coin, short its perpetual future, collect funding | **Edge ≈ deposit rate**, with exchange and regulatory risk |
+| 3 | **EURC stablecoin depeg capture** | Rest bids below €1; buy when a holder dumps, sell back near par | **Real edge, tiny capacity** (≈€100–300 a year) |
+
+The owner now shows this work to senior bankers and market professionals in Frankfurt, often in a 15–30 minute slot. Today the app is a Bloomberg-style terminal for strategy 1 only. A first-time viewer sees jargon (`Z-Score / Threshold`, `B/E`, `VWAP depth`, `Venue A Taker %`), the presenter's own settings and a number that changes every 2 seconds, and never learns that there were three strategies or how they compare.
+
+The app must tell the **same story as the deck and memo** in `reports/closure/`: three strategies, kept clearly separate, each with its own chart and numbers, then compared side by side.
 
 ### What success looks like
 
-1. **Answer first.** A finance professional who has never seen the project understands the conclusion and the three reasons for it within **3 minutes**, using only the new **Findings** view.
-2. **Live proof without jargon.** The presenter can then switch to **Live market** and show 60–90 seconds of real data that confirms the story, with no term left unexplained.
-3. **Expert depth stays available.** The full backtest tool still exists in **Lab** for anyone who asks "how did you test that?".
-4. **Works offline.** Findings needs no backend and no internet. Demos happen on laptops, in meeting rooms, sometimes on a bank network that blocks exchange APIs.
+1. **Answer first.** A finance professional who has never seen the project can say, within **3 minutes** of Findings, what the three strategies were, why each fell short, and how they compare against the deposit.
+2. **The three never blur.** Each strategy has its own colour, number, step and chart. A viewer can always tell which strategy a figure belongs to.
+3. **Live proof without jargon.** The presenter can switch to **Live market** and show 60–90 seconds of strategy 1's engine on real data, with no term left unexplained.
+4. **Expert depth stays available.** The backtest tool for strategy 1 stays in **Lab**.
+5. **Works offline.** Findings needs no backend and no internet. Demos happen on laptops, in meeting rooms, sometimes on a bank network that blocks exchange APIs.
 
 ### Hard rules
 
 - **Do not change anything under `src/`** (the Python backend), the API contracts, strategy maths, `scripts/` or `tests/`. This is a frontend-only change. §9.6 is the one exception, and it only deletes unused files.
-- **Do not invent numbers or wording.** Every figure in Findings comes from `src/content/findings.js` exactly as given in §7. Every live figure comes from the existing API. If you think a number is wrong, leave it and flag it in your summary; don't "fix" it.
+- **Do not invent numbers or wording.** Every figure in Findings comes from `src/content/findings.js` (§7) or `src/content/chart_data.json` (a byte-for-byte copy of `reports/closure/data/chart_data.json`; do not edit it). Every live figure comes from the existing API. If you think a number is wrong, leave it and flag it in your summary; don't "fix" it.
 - **Do not add or remove npm dependencies** in this pass. Use what is installed: React 18, Recharts, react-query 3, axios, xlsx. MUI is installed but should no longer be needed. Removing its usage is fine; leave `package.json` as it is.
 - **Keep it honest on every screen.** "Simulated · no orders are sent" must be visible on Live and Lab. Every Findings step shows its source line.
 - **Keep the Lab's backtest request payload byte-for-byte the same** as today's `api.runHistoricalBacktest` call (see `App.js` lines 333–347), and keep the Excel export working.
@@ -37,13 +46,15 @@ Replace the two tabs (`BSDEX vs World`, `Backtest`) with three views in this ord
 
 | Nav label | Hash route | What it is | Needs backend? |
 |---|---|---|---|
-| **Findings** (default) | `#/findings`, `#/findings/1` … `#/findings/6` | Six-step story of the result. Mirrors the 6-slide deck in `reports/closure/` | **No.** Static content only |
-| **Live market** | `#/live` | Simplified live paper engine: "is there a trade right now, and why not?" | Yes |
-| **Lab** | `#/lab` | Today's Backtest tab, restyled and relabelled, same functionality | Yes |
+| **Findings** (default) | `#/findings`, `#/findings/1` … `#/findings/6` | Six steps: answer, history, strategy 1, strategy 2, strategy 3, side by side. Mirrors the 6-slide deck in `reports/closure/` | **No.** Static content only |
+| **Live market** (subtitle "Strategy 1 engine") | `#/live` | Simplified live paper engine for strategy 1: "is there a trade right now, and why not?" | Yes |
+| **Lab** (subtitle "Strategy 1 backtest") | `#/lab` | Today's Backtest tab, restyled and relabelled, same functionality | Yes |
+
+Strategies 2 and 3 have no live engine in this app: strategy 2 was assessed on twelve months of funding history, and strategy 3 was live-tested with a separate script (`scripts/eurc_live_test.py`). Both appear in Findings only. Don't add views or endpoints for them.
 
 - Use hash routing with a tiny hook (`useHashRoute`). No new router dependency. An empty or unknown hash goes to `#/findings/1`.
 - **Polling is tied to the view.** Live queries run only while `#/live` is open. The tier list (`/api/v1/bsdex/volume_tiers`) loads only on Live or Lab. **Findings must make zero network requests**; check this in the Network tab.
-- Top bar: project name on the left ("EUR Crypto Arbitrage"), the three nav items, and a **"Terms"** button on the right that opens the glossary drawer (§6). Remove the world clocks (§9.1). Show the connection dot only on Live and Lab.
+- Top bar: project name on the left ("Crypto Arbitrage: three strategies"), the three nav items, and a **"Terms"** button on the right that opens the glossary drawer (§6). Remove the world clocks (§9.1). Show the connection dot only on Live and Lab.
 
 ---
 
@@ -67,13 +78,19 @@ Match the deck and memo in `reports/closure/` so the app, slides and one-pager l
   --cost:       #A33639;  /* costs, losses, FAIL */
   --profit:     #347A78;  /* rare: positive P&L. Same hue as measured on purpose */
   --warn:       #9A6B00;  /* stale data, paused states */
+  --s1:         #2F5D8A;  /* strategy 1: cross-exchange spot */
+  --s1-light:   #8FB3D9;
+  --s2:         #B7791F;  /* strategy 2: perpetual funding carry */
+  --s2-light:   #E2B66B;
+  --s3:         #2F7D6D;  /* strategy 3: EURC depeg capture */
+  --deposit:    #18313B;  /* the 2.5% deposit yardstick, always a solid dark line */
   --radius:     4px;
   --font-sans:  'IBM Plex Sans', -apple-system, 'Segoe UI', Arial, sans-serif;
   --font-mono:  'IBM Plex Mono', 'SF Mono', Consolas, monospace;
 }
 ```
 
-- **Colours carry meaning, consistently:** teal means measured or market data, red means a cost, a loss or a fail. No orange anywhere. No decorative colour.
+- **Colours carry meaning, consistently.** Each strategy owns its colour everywhere: badge, kicker, KPI values and main chart series (`--s1` blue, `--s2` ochre, `--s3` green). Red (`--cost`) means a cost, a loss or a fail. The deposit yardstick is always `--deposit`, solid or dashed. No other decorative colour. The old terminal orange (`#FF8C00`) must not appear anywhere; `--s2` is a muted ochre, not that orange.
 - **Typography:** IBM Plex Sans is already loaded in `index.css`; keep it. Use `font-variant-numeric: tabular-nums` for all numbers. Use Plex Mono **only** in the Lab's dense tables. Sizes: step title 32–36px, stat values 40–56px, body 16–18px, captions and sources 12–13px. Nothing below 12px.
 - **Surfaces:** white page, `--pale` cards, 1px `--line` borders, `--radius` corners, no shadows, no glow, no hover-lift.
 - **Layout targets:** every Findings step fits **without vertical scrolling at 1280×720** (projector) and 1440×900 (laptop). Everything works at 390px wide (phone) with no horizontal page scroll; columns stack. Max content width 1200px, centred, 32px side padding (16px on phones).
@@ -86,44 +103,52 @@ Match the deck and memo in `reports/closure/` so the app, slides and one-pager l
 
 ### Behaviour
 
-- Six steps, one per screen, in the order below. Each step has a **kicker**, a **title**, **one visual**, at most **three short text lines**, and a **source line** at the bottom in `--muted` 12–13px.
-- Navigation: **Back / Next** buttons bottom-right; **←/→** and **PageUp/PageDown** keys (presentation clickers send these); a progress row of six dots with step titles as tooltips. Each step has its own hash (`#/findings/3`) so the presenter can deep-link. Next on step 6 goes to `#/live`.
+- Six steps, one per screen, in the order below. Each step has a **kicker**, a **title**, one or two **charts**, at most **three KPI tiles**, a **verdict line** where relevant, and a **source line** at the bottom in `--muted` 12–13px.
+- **Strategy steps (3, 4, 5) share one template** so they can be compared at a glance. All three put the same parts in the same places:
+  - kicker in the strategy colour
+  - a one-line title stating the finding
+  - a "How it makes money" subtitle
+  - the chart on the left, about 62% of the width
+  - three KPI tiles on the right
+  - a verdict band across the bottom: "Verdict: {label}." in the strategy colour, then one sentence
+- Navigation: **Back / Next** buttons bottom-right; **←/→** and **PageUp/PageDown** keys (presentation clickers send these); a progress row of six dots with step titles as tooltips. Dots 3–5 use their strategy colour. Each step has its own hash (`#/findings/3`) so the presenter can deep-link. Next on step 6 goes to `#/live`.
 - **"Present" toggle** (top-right of Findings, or the `F` key): hides the top bar for a clean full-screen look and uses `document.documentElement.requestFullscreen()` where allowed. `Esc` exits.
-- All text and numbers come from `findings.js` (§7). Components render data; they don't contain copy.
+- All text comes from `findings.js` and all chart data from `chart_data.json`. Components render data; they don't contain copy or numbers.
 - No animation beyond a 150ms fade between steps. Respect `prefers-reduced-motion`.
 
 ### Step-by-step
 
 **Step 1 · Answer** (dark panel: `--teal` background, white text)
-- Kicker, title, headline, subline and three stat cards from `findings.steps[0]`.
-- The three cards sit side by side (stacked on phones), on `--teal-soft`, with the value at 48–56px.
-- Footer line: the author and "Paper trading only · public market data · no orders sent".
+- Kicker, title and question from `steps[0]`.
+- Three strategy cards side by side (stacked on phones) on `--teal-soft`. Each card has:
+  - a numbered circular badge in the strategy colour, plus the strategy name
+  - the mechanism line
+  - a big number at 40–48px, with its label
+  - a verdict pill in the strategy colour
+- Bottom line: the decision. Footer: author, period, honesty line.
 
-**Step 2 · How it works**
-- A four-box horizontal flow: Watch → Price → Gate → Fill, with numbered circular badges and `›` separators (vertical on phones).
-- Below it, a "Three kinds of test" row with three short columns.
+**Step 2 · History and method**
+- A horizontal timeline of five milestones: dots on a line, date, head, one-line body. The last dot is `--cost`.
+- Below it, a three-row evidence table (strategy / venues / evidence / live test). The strategy names are in their colours.
+- Bottom box, the yardstick: "Same yardstick for all three: …".
 
-**Step 3 · The fee wall** (the key chart)
-- Left, about 62% width: a Recharts horizontal `BarChart` (`layout="vertical"`). Seven bars from `feeWall.bars`, in the order given (measured gaps at the top, costs below). Teal for `kind: "measured"`, red for `kind: "cost"`. A zero `ReferenceLine`. Value labels at the bar end (`+47.0`, `−2.3`). Category labels on the left, outside the plot, so negative bars never overlap them. Axis title: "Basis points (1 bp = 0.01%)".
-- Right, about 38%: a `--pale` card with the three callouts in order (big "0 trades", the 99.6% / 99.9% line, and the frozen-prices line in `--cost`).
-- **Interaction (one, optional for the viewer):** a segmented control "Order size: €1k · €10k · €100k · €250k" under the chart, with nothing selected at first (the chart then matches the deck exactly). Choosing a size swaps the three measured bars for the values in `feeWall.bySize`; the mapping is under §7. The cost bars stay fixed. When the presenter clicks €250k, the gap visibly grows more negative; at €1k the best moments are slightly positive but still far below every cost. Caption below the control: `feeWall.bySizeCaption`.
+**Step 3 · Strategy 1: cross-exchange spot** (template above)
+- **Chart:** a Recharts `ComposedChart`. Grouped bars of the median tradeable gap by order size, from `chart_data.s1.by_size`: BTC in `--s1`, ETH in `--s1-light`, four groups €1k / €10k / €100k / €250k. Two horizontal dashed `ReferenceLine`s: 9 bps (light red, "Break-even, > $250M tier") and 17 bps (`--cost`, "Break-even, default > $20M tier"). Y axis −10 to 20 bps. Value labels on the bars (`−2.3`).
+- **Toggle under the chart** "Median / Best 1% of moments": swaps the bars to `btc_p99` / `eth_p99`. Even the best moments stay far below the lines; that's the point.
 
-**Step 4 · The backtest trap**
-- Two big cards side by side: **Before fixes** (value in `--profit`) → **After fixes** (value in `--cost`), with an arrow between them.
-- Below them, three "bug" cards (title plus one sentence).
-- Bottom line in bold `--teal`: the second-week result.
+**Step 4 · Strategy 2: perpetual funding carry**
+- **Chart:** a Recharts `LineChart` of `chart_data.s2.rolling30["Kraken BTC"]` (`--s2`) and `["Deribit BTC"]` (`--s2-light`). Join them on date; Deribit starts a few days later, so leave its gap empty rather than drawing it as zero. Add a solid `ReferenceLine` at `s2.deposit_pct` (`--deposit`, "Bank deposit 2.5%") and a dashed one at `s2.needed_pct` (`--cost`, "≈7% needed to justify the risk"). Y axis in % a year. X ticks every second month ("Nov 25").
+- **Toggle "BTC / ETH"**: switches both lines to the `… ETH` series.
 
-**Step 5 · Live test: EURC euro stablecoin**
-- Left, about 62%: the five-row criteria table (criterion / result / verdict). `FAIL` in bold `--cost`; `NOT MET` in bold `--muted`.
-- Right, about 38%: three stacked fact cards (big value plus one-line label).
-- Below the table, the "only positive result" line in `--muted`.
+**Step 5 · Strategy 3: EURC depeg capture**
+- **Left chart** (about 55% width): a line or area chart of `chart_data.s3.kraken_daily.low` against date, Y axis €0.95–€1.005, with a dashed `--cost` reference line at 0.9925 ("Bid at 0.9925"). Light `--s3` fill between the line and 1.00 makes the depegs visible.
+- **Middle chart** (about 25%): a bar chart of `chart_data.s3.ladder_kraken_fee_020` for levels 0.9975, 0.995, 0.9925, 0.99 and 0.98, value = `ann_pct`. Negative bars in `--cost`, positive in `--s3`. Caption: the fill counts and "Candles prove a price printed, not that size was there."
+- **KPI tiles** on the right; the live-test box across under the charts; then the verdict band.
 
-**Step 6 · Decision and what remains** (dark panel, like step 1)
-- Left column: "Decision", the decision line, the reason, then "What would reopen it" with three bullets.
-- Right column: a `--teal-soft` card titled "Where the data helps now" with four numbered items.
-- Footer: the contact line, plus a primary button **"See it live →"** to `#/live`.
-
----
+**Step 6 · Side by side**
+- **Left: "What €40k would have earned in a year."** A horizontal range chart from `chart_data.compare_40k`, scale €0–€2,000. Each row is a bar from `low` to `high` in its colour, with a minimum visible width for the €0 and €1,000 points. A dashed vertical `--deposit` line at €1,000. Labels sit beside the bars and must never cross the dashed line (put the strategy 2 label to the left of its bar). Build it with plain SVG or divs if Recharts gets in the way; it's four rows.
+- **Right:** the scorecard table (strategy / capacity / main risk / worth revisiting if), with strategy numbers in their colours.
+- **Bottom** (dark `--teal` box): the decision, "What the work is good for now", the contact line and a **"See strategy 1 live →"** button to `#/live`.
 
 ## 4. Live market view
 
@@ -258,151 +283,140 @@ A right-side drawer (full-screen on phones), opened from the top-bar "Terms" but
 
 ---
 
-## 7. `src/content/findings.js` (use verbatim)
+## 7. Content and data files (use verbatim)
 
-Every value below is sourced. Don't round, rephrase or "improve" anything. If a value looks inconsistent, flag it and keep it.
+### 7.1 `src/content/chart_data.json`
+
+Copy `reports/closure/data/chart_data.json` into `hft-frontend/src/content/chart_data.json` unchanged, and import it statically (`import chartData from './chart_data.json'`). It is about 64 KB. It holds:
+- `s1.by_size` and `s1.breakeven_bps` (strategy 1 chart)
+- `s2.rolling30[...]`, `s2.stats[...]`, `s2.deposit_pct` and `s2.needed_pct` (strategy 2 chart and KPIs)
+- `s3.kraken_daily`, `s3.ladder_kraken_fee_020`, `s3.kraken_days_below_09925` and `s3.kraken_min_low` (strategy 3 charts and KPIs)
+- `compare_40k` (step 6)
+
+It's produced by `reports/closure/.build/build_chart_data.py`. If the data needs refreshing, re-run that script and copy the file again; never edit numbers by hand.
+
+### 7.2 `src/content/findings.js`
+
+Display rounding rule: one decimal, half away from zero (e.g. 2.25 → "2.3"), matching the deck. Use `formatPct1` from `lib/format.js`, not `toFixed` on raw floats you have computed yourself.
 
 ```js
-// Single source of truth for the Findings view. Mirrors reports/closure/ (memo and 6-slide deck).
-// Sources: docs/BSDEX_Explainer_Guide.html (live run 14 Oct 2026; backtests 7–14 Oct 2026),
-// docs/engine-integrity.md (24 Sep–1 Oct 2026), docs/eurc_live_test_results.md (22 Oct 2026).
+// Copy for the Findings view. Mirrors reports/closure/ (memo and 6-slide deck).
+// Numbers that come from chart_data.json are referenced by path in {braces}; render them with lib/format.js.
 const findings = {
   meta: {
     author: 'Syed Zee Waqar Hussain',
     period: 'May 2025 – October 2026',
-    honesty: 'Paper trading only · public market data · no orders sent',
+    honesty: 'Paper trading on live public market data · No orders sent',
     contact: 'Happy to walk through the data in 15 minutes · Syed Zee Waqar Hussain',
+  },
+  strategies: {
+    1: { name: 'Cross-exchange spot arbitrage', short: 'Cross-exchange spot', color: 'var(--s1)',
+         how: 'Buy BTC or ETH on the cheaper exchange and sell on the dearer one at the same moment.' },
+    2: { name: 'Perpetual funding carry', short: 'Perpetual carry', color: 'var(--s2)',
+         how: 'Buy spot and short the perpetual future; collect the funding that leveraged longs pay.' },
+    3: { name: 'EURC depeg capture', short: 'EURC depeg capture', color: 'var(--s3)',
+         how: 'Rest bids below €1 for the euro stablecoin; buy when a seller dumps, sell back near par.' },
   },
   steps: [
     {
       id: 'answer',
       kicker: 'Research briefing · October 2026',
-      title: 'EUR crypto arbitrage: one year of testing',
-      headline: 'After every cost, there was no edge to trade.',
-      subline: 'What remains useful is the data on what EUR crypto execution really costs.',
-      stats: [
-        { value: '0', label: 'trades in a 4-hour live paper run at €100k per leg' },
-        { value: '−2.3 bps', label: 'median BTC price gap, against 17 bps needed to break even' },
-        { value: '0 of 136', label: 'realistic backtest settings that made money' },
+      title: 'Three crypto arbitrage strategies against a 2.5% deposit',
+      question: 'The question: can any of them beat a 2.5% EUR bank deposit after every cost?',
+      cards: [
+        { strategy: 1, value: '−2.3 bps', label: 'median price gap at €100k, against a 17 bps cost', verdict: 'No edge' },
+        { strategy: 2, value: '{s2.stats["Kraken BTC"].mean_ann_pct}%', label: 'a year of funding (Kraken BTC, 12 months), before hedge and risk', verdict: 'Edge ≈ deposit rate' },
+        { strategy: 3, value: '€100–300', label: 'a year, realistic, on a €5k sleeve', verdict: 'Real edge, tiny capacity' },
       ],
-      source: 'Live run 14 Oct 2026, 4 h, €100k per leg, > $20M fee tier. Backtest sweep 7–14 Oct 2026.',
+      decision: 'Decision: deploy none. The €40k test capital stays in the 2.5% deposit.',
+      source: 'Syed Zee Waqar Hussain · May 2025 – Oct 2026 · Paper trading on live public market data · No orders sent',
     },
     {
-      id: 'setup',
-      kicker: '01 · The question and the set-up',
-      title: 'Do price gaps between exchanges survive costs?',
-      flow: [
-        { n: 1, head: 'Watch', body: 'BTC and ETH: Bitstamp (EUR) vs Binance (USDT, in EUR). EURC: Bitvavo, Kraken, Bitstamp.' },
-        { n: 2, head: 'Price', body: 'Measure the gap for the full order size, after crossing both order books.' },
-        { n: 3, head: 'Gate', body: 'Trade only if the gap beats both exchange fees plus a 1 bp FX cost.' },
-        { n: 4, head: 'Fill', body: 'Fill both legs 300 ms later. Book losses; count failed fills.' },
+      id: 'history',
+      kicker: '01 · How the project got here',
+      title: 'Eighteen months, three strategies, one yardstick',
+      timeline: [
+        { when: 'May 2025', head: 'Prototype', body: 'Binance vs Kraken z-score engine, live paper trading, web dashboard' },
+        { when: 'May–Jun 2026', head: 'Institutional model', body: '"BSDEX vs World": bank fee tiers, live EUR/USDT, full-depth prices, slippage' },
+        { when: '11–15 Oct 2026', head: 'Audit + live run', body: 'Three backtest bugs fixed; 4-hour live campaign at €100k per leg' },
+        { when: '13–22 Oct 2026', head: 'Alternatives', body: 'Perpetual carry (12 months of funding) and EURC (live test + daily history)' },
+        { when: '22 Oct 2026', head: 'Decision', body: 'Deploy none; keep the €40k in the deposit' },
       ],
-      testsTitle: 'Three kinds of test',
-      tests: [
-        { head: 'Backtests', body: 'One-minute candles, every fee tier, 136 parameter settings' },
-        { head: 'Replays', body: 'Recorded order books, fills at 300 / 1,000 / 2,000 ms' },
-        { head: 'Live paper runs', body: 'BTC/ETH on 14 Oct (4 h) and EURC on 22 Oct (2.6 h), pass/fail rules set in advance' },
+      evidence: [
+        { strategy: 1, venues: 'Bitstamp EUR, Binance USDT→EUR, Kraken', evidence: '136-setting backtest sweep, order-book replays, verified 1-week backtest', live: '4 h on 14 Oct, 49,825 snapshots per coin' },
+        { strategy: 2, venues: 'Kraken, Deribit, OKX perpetuals', evidence: '12 months of hourly funding; EU fee schedules and access', live: 'None: profit accrues over months, not hours' },
+        { strategy: 3, venues: 'Bitvavo, Kraken, Bitstamp (EURC/EUR)', evidence: '12 months of daily candles; resting-bid ladder backtest', live: '2.6 h on 22 Oct, three venues, rules set in advance' },
       ],
-      source: 'Bitstamp stands in for BSDEX (its API needs keys); LMAX fees are modelled.',
+      yardstick: 'Same yardstick for all three: net of every fee, spread, currency, funding and idle-capital cost, measured against a 2.5% EUR deposit.',
+      source: 'Sources: git history; docs/BSDEX_Explainer_Guide.html; docs/eurc_live_test.md; reports/closure/data/meta.json. Bitstamp stands in for BSDEX (its API needs keys).',
     },
     {
-      id: 'fee-wall',
-      kicker: '02 · The fee wall',
-      title: 'Price gaps are a few bps; costs are 7 to 47 bps',
-      callouts: [
-        { big: '0 trades', text: 'in 4 hours of live paper trading at €100k per leg' },
-        { text: 'At €100k the gap was negative 99.6% (BTC) and 99.9% (ETH) of the time.' },
-        { text: 'The 14 moments that beat break-even lasted 3 s at most, and only while one venue’s prices froze.', tone: 'cost' },
+      id: 's1', strategy: 1,
+      kicker: 'Strategy 1 · Cross-exchange spot arbitrage',
+      title: 'The price gap is smaller than the cost of trading it',
+      subtitle: 'Buy on the cheaper exchange, sell on the dearer one, at the same moment. BTC and ETH, Bitstamp (EUR) vs Binance (USDT, in EUR).',
+      chartTitle: 'Median tradeable gap by order size vs cost to break even (bps)',
+      kpis: [
+        { value: '0 trades', label: 'in a 4-hour live paper run at €100k per leg; the gap beat 17 bps 0% of the time' },
+        { value: '0 of 136', label: 'realistic backtest settings made money (7–14 Oct, every fee tier)' },
+        { value: '+€276 → −€1,548', label: 'the “profitable” backtest once look-ahead, a stale FX rate and instant fills were fixed', tone: 'cost' },
       ],
-      source: 'Live paper run, 14 Oct 2026, 11:04–15:04 UTC, 49,825 snapshots per coin. Gap after crossing both books, before fees. Fee tiers are assumptions.',
+      verdict: { label: 'no edge', text: 'The market is arbitraged to within a few bps; paying spread and fees on both legs cannot win. The rare big gaps were frozen prices, ≤ 3 s.' },
+      source: 'Live campaign 14 Oct 2026, 4 h (docs/BSDEX_Explainer_Guide.html); gap after crossing both books, before fees. Backtest: BTC/EUR 24 Sep–1 Oct 2026.',
     },
     {
-      id: 'backtest-trap',
-      kicker: '03 · The backtest trap',
-      title: 'The profitable backtest was three bugs',
-      before: { label: 'Before fixes', value: '+€276', detail: '5 trades · 100% winners · no drawdown' },
-      after: { label: 'After fixes', value: '−€1,548', detail: '7 trades · 0 winners · −€1,740 after funding cost' },
-      bugs: [
-        { head: 'Look-ahead', body: 'The entry rule read the bar it would be filled on, so it only took trades it already knew would win.' },
-        { head: 'Wrong FX rate', body: 'The daily ECB rate sat 44 bps away from live EUR/USDT, which created gaps that did not exist.' },
-        { head: 'Instant fills', body: 'Paper fills had no delay, so they could never lose. Now: 300 ms and full-depth prices.' },
+      id: 's2', strategy: 2,
+      kicker: 'Strategy 2 · Perpetual funding carry',
+      title: 'The yield is real, but it is roughly the deposit rate',
+      subtitle: 'Hold the coin and short its perpetual future so price moves cancel; earn the funding that leveraged buyers pay.',
+      chartTitle: 'Funding earned by the short, 30-day average (% a year)',
+      kpis: [
+        { value: '{s2.stats["Kraken BTC"].mean_ann_pct}% vs 2.5%', label: '12-month average funding, Kraken BTC (Deribit {s2.stats["Deribit BTC"].mean_ann_pct}%), in USD' },
+        { value: '{s2.stats["Kraken BTC"].share_negative_pct|round0}% of hours', label: 'had negative funding on Kraken: the short pays instead of earning', tone: 'cost' },
+        { value: '€960–1,720', label: 'a year on €40k before the EUR/USD hedge, against €1,000 from the deposit' },
       ],
-      bottomLine: 'On a second week of data, 0 of 136 realistic settings made money.',
-      source: 'BTC/EUR, 24 Sep–1 Oct 2026, €100k per leg, > $250M tier (docs/engine-integrity.md). Second week: 7–14 Oct 2026, 1-minute candles, all fee tiers.',
+      verdict: { label: 'edge ≈ deposit rate', text: 'Pays only in high-funding regimes, with exchange and ESMA “likely CFD” risk on 100% of capital; cheapest venues are closed to EU residents.' },
+      source: 'Funding: Kraken Futures and Deribit public history to 22 Oct 2026, 30-day average, annualised. Net range and ≈7% level: docs/eurc_live_test.md.',
     },
     {
-      id: 'eurc',
-      kicker: '04 · Live test: EURC euro stablecoin',
-      title: 'Stablecoin test: every pre-set criterion failed',
-      criteria: [
-        { criterion: 'Net profit after exit costs above zero', result: 'about −€29', verdict: 'FAIL' },
-        { criterion: 'Market-making P&L at mid of at least zero', result: '−€2.48', verdict: 'FAIL' },
-        { criterion: 'Median 60 s markout of at least −1 bp', result: '−34 bps', verdict: 'FAIL' },
-        { criterion: 'Our fills below 20% of venue volume', result: '35%', verdict: 'FAIL' },
-        { criterion: 'At least 3 sessions, including a weekend', result: '1 session, 2.6 h', verdict: 'NOT MET' },
+      id: 's3', strategy: 3,
+      kicker: 'Strategy 3 · EURC stablecoin depeg capture',
+      title: 'A real edge, but each depeg is small and brief',
+      subtitle: 'Rest bids below €1 for the euro stablecoin; when a holder dumps into a thin book, buy and sell back near par.',
+      chartTitle: 'EURC/EUR daily low on Kraken, last 12 months',
+      ladderTitle: 'Resting-bid backtest after fees (% a year)',
+      ladderCaption: 'Fills over the year: {fills joined by " · "}. Candles prove a price printed, not that size was there.',
+      kpis: [
+        { value: '{s3.kraken_days_below_09925} days', label: 'below €0.9925 on Kraken in 12 months (low €{s3.kraken_min_low})' },
+        { value: '≈2.5k EURC', label: 'per seller sweep on the live tape: +€12 on one event' },
+        { value: '€100–300', label: 'a year, realistic, on a €5k sleeve' },
       ],
-      facts: [
-        { big: '2 vs 20 bps', text: 'Kraken’s spread against its maker fee: never worth quoting' },
-        { big: '≈6,500 EURC', text: 'Bitvavo’s median daily volume over the last 366 days' },
-        { big: '−39 bps', text: 'best cross-venue trade at €10k, after fees' },
-      ],
-      footnote: 'The only positive result, a deep bid absorbing one seller sweep, is worth about €100–300 a year.',
-      source: 'Session 22 Oct 2026, 19:48–22:25 UTC; Bitvavo, Kraken, Bitstamp; €40k per market-making instance. Criteria fixed in docs/eurc_live_test.md before the run.',
+      liveBox: { head: 'Live test, 22 Oct (2.6 h):', text: 'market making −€29 and failed all 4 pre-set criteria; cross-venue arbitrage −39 bps at €10k. Kraken’s 2 bps spread sits under a 20 bps fee.' },
+      verdict: { label: 'real edge, tiny capacity', text: 'Deep bids do catch depegs, but each sweep is a few thousand EURC: too small to move €40k, and it needs two venues and on-chain transfers.' },
+      source: 'Kraken EURC/EUR daily candles to 22 Oct 2026. Ladder: rule in scripts/eurc_live_test.py, 0.20% fee each side, exit 0.9995. Live test: docs/eurc_live_test_results.md.',
     },
     {
-      id: 'decision',
-      kicker: '05 · Decision and what remains',
-      title: 'Not deployed. The measurements are the asset.',
-      decision: 'Keep the €40k in the 2.5% deposit.',
-      reason: 'The market is arbitraged to within a few bps. Paying spreads and fees cannot win; only earning them might.',
-      reopenTitle: 'What would reopen it',
-      reopen: [
-        'BTC funding above about 7% a year, sustained',
-        'Free, practical par redemption of EURC',
-        'Bitvavo EURC volume above €100k a day',
+      id: 'compare',
+      kicker: '02 · Side by side',
+      title: 'None beats the deposit by enough to justify the risk',
+      chartTitle: 'What €40k would have earned in a year',
+      rangeLabels: ['€1,000', '€0: no trade clears', '€960–1,720 before hedge', '€100–300, capped'],
+      scorecard: [
+        { strategy: 1, capacity: 'None: no edge', risk: 'Fees on both legs; frozen prices', revisit: 'A maker-only design with a near-free hedge' },
+        { strategy: 2, capacity: 'Large (millions)', risk: 'Negative funding; exchange and ESMA risk', revisit: '90-day funding above ≈7%, sustained, and EU rules clarified' },
+        { strategy: 3, capacity: '≈2.5k EURC per event', risk: 'Thin books; transfer costs', revisit: 'Free par redemption, or Bitvavo volume above €100k a day' },
       ],
-      usesTitle: 'Where the data helps now',
-      uses: [
-        { head: 'Best execution', body: 'Live spread, depth, freshness and latency per venue (MiCA Art. 78).' },
-        { head: 'Euro stablecoins', body: 'EURC traded below 0.9925 on 28 of 366 days on Bitvavo.' },
-        { head: 'Model validation', body: 'A checklist of the errors that made losses look like profit.' },
-        { head: 'Next test worth running', body: 'Passive quotes with a near-free internal hedge, at real institutional fees.' },
-      ],
-      source: 'Triggers from docs/eurc_live_test_results.md. MiCA Art. 78: best execution for crypto-asset service providers.',
+      decision: 'Decision: deploy none. The €40k stays in the 2.5% deposit.',
+      useful: 'What the work is good for now: live venue-quality data for best execution (MiCA Art. 78), euro-stablecoin liquidity evidence, and a checklist of the backtest errors that make losses look like profit.',
+      source: 'Ranges: 1 from the live run; 2 from docs/eurc_live_test.md, before the EUR/USD hedge; 3 from docs/eurc_live_test_results.md, €5k sleeve.',
     },
   ],
-  feeWall: {
-    // Order matters: rendered top to bottom.
-    bars: [
-      { key: 'btcMedian', label: 'BTC median gap, €100k', value: -2.3, kind: 'measured' },
-      { key: 'ethMedian', label: 'ETH median gap, €100k', value: -4.1, kind: 'measured' },
-      { key: 'btcBest',   label: 'Best 1% of moments, BTC €1k', value: 1.6, kind: 'measured' },
-      { key: 'tier1b',    label: '> $1B tier', value: 7, kind: 'cost' },
-      { key: 'tier250m',  label: '> $250M tier', value: 9, kind: 'cost' },
-      { key: 'tier20m',   label: '> $20M tier (default)', value: 17, kind: 'cost' },
-      { key: 'retail',    label: 'Retail fees', value: 47, kind: 'cost' },
-    ],
-    // Live run 14 Oct 2026: tradeable gap after crossing both books, before fees (bps).
-    // median = typical moment; p99 = best 1% of moments; positiveShare = share of time the gap was above zero.
-    bySize: {
-      '€1k':   { btc: { median: -0.37, p99: 1.55, positiveShare: '27.9%' }, eth: { median: -0.52, p99: 1.57, positiveShare: '25.4%' } },
-      '€10k':  { btc: { median: -0.58, p99: 1.35, positiveShare: '21.0%' }, eth: { median: -0.75, p99: 1.42, positiveShare: '18.4%' } },
-      '€100k': { btc: { median: -2.26, p99: -0.24, positiveShare: '0.44%' }, eth: { median: -4.10, p99: -1.12, positiveShare: '0.09%' } },
-      '€250k': { btc: { median: -4.99, p99: -2.44, positiveShare: '0.05%' }, eth: { median: -8.47, p99: -4.35, positiveShare: '0.02%' } },
-    },
-    bySizeCaption: 'Bigger orders eat deeper into the order book, so the gap shrinks. Even the best 1% of moments never reaches the cheapest fee tier.',
-  },
 };
 
 export default findings;
 ```
 
-**How the order-size control maps onto the bars:** before the presenter touches the control, render `feeWall.bars` exactly as listed, matching slide 3 of the deck (third bar +1.6 = BTC best 1% at €1k). The control starts with no segment selected and the caption "Try another order size". Once a size *S* is chosen, all three measured bars follow it:
-- `btcMedian` = `bySize[S].btc.median`, labelled `BTC median gap, ${S}`
-- `ethMedian` = `bySize[S].eth.median`, labelled `ETH median gap, ${S}`
-- third bar = `bySize[S].btc.p99`, labelled `Best 1% of moments, BTC ${S}`
-
-Show the values with one decimal. A "Reset" link returns to the deck view. Cost bars never change.
+**Placeholders:** `{path}` placeholders in strings are resolved against `chart_data.json` by a small `fill(template, data)` helper in `lib/format.js`. Numbers render with `formatPct1` (one decimal, half away from zero); `|round0` means a whole number. `{fills joined by " · "}` means the `fills` of the five ladder bars shown, in order. The rendered text must equal the deck exactly: "3.3% vs 2.5%", "Deribit 2.3%", "31% of hours", "20 days", "low €0.953", "41 · 19 · 15 · 13 · 6".
 
 ---
 
@@ -427,6 +441,12 @@ const glossary = [
   { term: 'Paper trading', def: 'Simulated trading on live market data. No orders are sent and no money is at risk.' },
   { term: 'EURC', def: 'A euro stablecoin issued by Circle, designed to be worth €1.' },
   { term: 'BSDEX (proxy)', def: 'A German regulated crypto exchange. Its API needs keys, so Bitstamp’s EUR market stands in for it here.' },
+  { term: 'Perpetual future (perp)', def: 'A futures contract with no expiry. A funding payment between buyers and sellers keeps its price close to the coin’s spot price.' },
+  { term: 'Funding rate', def: 'The periodic payment between perp buyers and sellers. When it is positive, buyers pay sellers; the carry trade is the seller.' },
+  { term: 'Cash-and-carry (funding carry)', def: 'Holding the coin and shorting the same amount of its perpetual, so price moves cancel and only the funding is earned.' },
+  { term: 'Depeg', def: 'When a stablecoin trades below (or above) the currency it tracks, e.g. EURC at €0.99 instead of €1.00.' },
+  { term: 'Par redemption', def: 'Exchanging a stablecoin with its issuer for exactly one unit of the currency. Under MiCA, Circle redeems EURC at par.' },
+  { term: 'Resting-bid ladder', def: 'Buy orders left in the book at several prices below €1, which only fill when a seller pushes the price down to them.' },
 ];
 
 export default glossary;
@@ -458,7 +478,9 @@ hft-frontend/src/
   lib/format.js          # formatBps, formatEur, formatFrankfurtTime, pctToBps
   lib/signalStates.js    # §4.2 mapping
   views/FindingsView.jsx
-  views/findings/StepAnswer.jsx, StepSetup.jsx, StepFeeWall.jsx, StepBacktestTrap.jsx, StepEurc.jsx, StepDecision.jsx
+  views/findings/StepAnswer.jsx, StepHistory.jsx, StrategyStep.jsx (shared template),
+                 S1Chart.jsx, S2Chart.jsx, S3Charts.jsx, StepCompare.jsx
+  content/chart_data.json   # copy of reports/closure/data/chart_data.json, unchanged
   views/LiveView.jsx
   views/LabView.jsx
   components/TopBar.jsx, GlossaryDrawer.jsx, Term.jsx, StatCard.jsx, Details.jsx
@@ -469,7 +491,7 @@ hft-frontend/src/
 The current `theme.js` (MUI dark theme) is no longer needed once `ThemeProvider` and `CssBaseline` are removed from `App.js`. Delete the file and its import; leave the package installed.
 
 ### 9.5 Page metadata
-In `public/index.html`, set `<title>EUR Crypto Arbitrage · Findings</title>` and the meta description "One year of testing cross-exchange EUR crypto arbitrage: after every cost, no tradeable edge."
+In `public/index.html`, set `<title>Crypto Arbitrage · Three Strategies</title>` and the meta description "Three crypto arbitrage strategies tested against a 2.5% EUR deposit: cross-exchange spot, perpetual funding carry and EURC depeg capture."
 
 ### 9.6 Optional, outside `hft-frontend/`: the orphan Next.js frontend
 `src/crypto_hft_tool/frontend/` holds five `.tsx` files from an earlier Next.js prototype, with no `package.json` and no references. Before deleting, confirm with `grep -rn "crypto_hft_tool/frontend" --include=*.py --include=*.js --include=*.json --include=*.toml --include=*.yaml --include=*.sh .` (excluding `node_modules`). Delete it only if that returns nothing apart from the folder itself, in its own commit titled "Remove unused Next.js prototype frontend".
@@ -480,9 +502,9 @@ In `public/index.html`, set `<title>EUR Crypto Arbitrage · Findings</title>` an
 
 Replace the CRA placeholder `App.test.js` (it looks for "learn react" and fails) with:
 
-1. **Findings renders offline:** mock `axios` to reject every call; render `App` at `#/findings/1`; assert the headline "After every cost, there was no edge to trade." is present and that **axios was never called**.
-2. **Step navigation:** pressing → three times from step 1 lands on step 4 (title "The profitable backtest was three bugs") and updates `location.hash` to `#/findings/4`.
-3. **Order-size control:** on step 3, choosing €250k changes the BTC median bar label to `−5.0`.
+1. **Findings renders offline:** mock `axios` to reject every call; render `App` at `#/findings/1`; assert the title "Three crypto arbitrage strategies against a 2.5% deposit" and all three verdict pills are present, and that **axios was never called**.
+2. **Step navigation:** pressing → three times from step 1 lands on step 4 (title "The yield is real, but it is roughly the deposit rate") and updates `location.hash` to `#/findings/4`.
+3. **Data-driven copy:** on step 4 the first KPI renders exactly "3.3% vs 2.5%" and its label contains "Deribit 2.3%"; on step 5 the ladder caption contains "41 · 19 · 15 · 13 · 6". This proves the `fill()` helper and the half-up rounding.
 4. **Formatting:** `formatBps(-2.26) === '−2.3 bps'`; `formatBps(1.55) === '+1.6 bps'`; `pctToBps(-0.0226) === -2.26` (within floating-point tolerance).
 5. **Signal states:** every key in §4.2 maps to the exact sentence; an unknown key maps to "Watching".
 6. **Live offline panel:** with `/api/v1/bsdex/status` rejected, `#/live` shows "The live feed isn't running."
@@ -494,7 +516,7 @@ Replace the CRA placeholder `App.test.js` (it looks for "learn react" and fails)
 
 1. **Structure, no visual change:** split files (§9.4), remove dead code (§9.2, §9.3), add the hash router with the three routes (Findings can be a placeholder). The app works exactly as before under Live and Lab.
 2. **Design tokens and base styles** (§2). Live and Lab adopt the light theme.
-3. **Findings view** (§3, §7), including keyboard navigation, the Present toggle and the order-size control.
+3. **Findings view** (§3, §7): the shared strategy template, all six steps with their charts, keyboard navigation, the Present toggle and the two chart toggles.
 4. **Live view** simplification (§4), the offline panel and form initialisation from status.
 5. **Lab** framing (§5): the verified-example button and the result headline.
 6. **Glossary drawer and relabelling** (§6, §8).
@@ -509,7 +531,8 @@ Replace the CRA placeholder `App.test.js` (it looks for "learn react" and fails)
 - [ ] With the backend **stopped**, Findings works fully, and the Network tab shows **no** requests while on Findings.
 - [ ] Each Findings step fits without vertical scroll at **1280×720** and **1440×900**. No horizontal scroll at **390px** wide.
 - [ ] ←/→ and PageUp/PageDown move between steps; deep links `#/findings/1` to `#/findings/6` work; Present mode hides the top bar and Esc exits.
-- [ ] Every number on Findings matches `findings.js`; no other hard-coded numbers in view components.
+- [ ] Every number on Findings comes from `findings.js` or `chart_data.json`, and matches the deck (`reports/closure/Crypto_Arbitrage_Three_Strategies_Briefing.pdf`) slide for slide; no other hard-coded numbers in view components.
+- [ ] The three strategies are visually separate: each uses only its own colour, and steps 3–5 share one layout.
 - [ ] Live: the hero sentence shows gap and break-even in bps from the API, the right sentence for each `signal_state`, and order size and tier from the market payload.
 - [ ] Live: everything that was on the old Live tab is still reachable under "Technical details" or "Assumptions".
 - [ ] Live: the assumptions form starts from the server's current settings; Apply posts the same payload as before.
@@ -527,4 +550,5 @@ Replace the CRA placeholder `App.test.js` (it looks for "learn react" and fails)
 - New npm packages, a TypeScript migration, a state-library change.
 - Dark mode.
 - Re-running the experiments or changing any reported number.
+- Live views for strategies 2 and 3 (they live in Findings only).
 - README rewrite (separate task).
